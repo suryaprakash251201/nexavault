@@ -46,6 +46,7 @@ export class GitHubBackend extends BaseSyncBackend {
   private repo = '';
   private treeCache: Map<string, GitHubTreeItem> = new Map();
   private fileReader: ((path: string) => Promise<Uint8Array>) | null = null;
+  private emptyRepo = false;
 
   /**
    * Inject a vault file reader (wired by SyncEngine).
@@ -112,8 +113,23 @@ export class GitHubBackend extends BaseSyncBackend {
     });
 
     // Test connection
+    this.emptyRepo = false;
     try {
       await this.octokit.rest.repos.get({ owner: this.owner, repo: this.repo });
+
+      // Detect empty repos (no commits): branch ref does not exist yet.
+      try {
+        const branches = await this.octokit.rest.repos.listBranches({
+          owner: this.owner, repo: this.repo, per_page: 1,
+        });
+        this.emptyRepo = branches.data.length === 0;
+      } catch {
+        this.emptyRepo = false;
+      }
+      if (this.emptyRepo) {
+        this.logger.warn('Repository is empty (no commits). First sync will create the initial commit automatically.');
+      }
+
       this.connected = true;
       this.logger.info('GitHub connected successfully');
     } catch (error: any) {
@@ -147,11 +163,11 @@ export class GitHubBackend extends BaseSyncBackend {
 
   async getRemoteManifest(): Promise<Manifest> {
     if (!this.octokit) throw new Error('Not connected');
-    
+
     this.logger.debug('Fetching GitHub manifest...');
-    
+
     try {
-      // Get tree recursively
+      // Get tree recursively (empty repo / no branch -> empty manifest)
       const tree = await this.getTreeRecursive(this.config.branch, this.config.syncPath);
       
       const files: Manifest['files'] = {};
@@ -316,7 +332,37 @@ export class GitHubBackend extends BaseSyncBackend {
     if (changes.length === 0) return;
     
     this.logger.info(`Pushing ${changes.length} changes to GitHub...`);
-    
+
+    // Empty repo: GitHub's git-DB API refuses (409 "Git Repository is empty").
+    // Use the Contents API instead - the first write creates the initial
+    // commit AND the branch automatically.
+    if (this.emptyRepo) {
+      this.logger.info('Empty repository detected - bootstrapping via Contents API');
+      for (const change of changes) {
+        if (change.type === 'delete') {
+          await this.deleteFile(change.path);
+          continue;
+        }
+        if (change.type === 'rename' && change.oldPath) {
+          await this.deleteFile(change.oldPath);
+          if (!this.fileReader) {
+            throw new Error('GitHub backend has no file reader - file upload disabled');
+          }
+          const data = await this.fileReader(change.path);
+          await this.uploadFile(change.path, data);
+          continue;
+        }
+        if (!this.fileReader) {
+          throw new Error('GitHub backend has no file reader - file upload disabled');
+        }
+        const data = await this.fileReader(change.path);
+        await this.uploadFile(change.path, data);
+      }
+      this.emptyRepo = false;
+      this.logger.info('Bootstrap push complete - branch and initial commits created');
+      return;
+    }
+
     // Create a tree with all changes
     const treeItems = [];
     
@@ -365,23 +411,35 @@ export class GitHubBackend extends BaseSyncBackend {
       }
     }
     
-    // Get base tree
-    const baseCommit = await this.octokit.rest.repos.getCommit({
-      owner: this.owner,
-      repo: this.repo,
-      ref: this.config.branch,
-    });
-    
-    const baseTree = baseCommit.data.commit.tree.sha;
-    
-    // Create new tree
+    // Determine base commit/tree (empty repos have none yet)
+    let baseCommitSha: string | null = null;
+    let baseTreeSha: string | null = null;
+    if (!this.emptyRepo) {
+      try {
+        const baseCommit = await this.octokit.rest.repos.getCommit({
+          owner: this.owner,
+          repo: this.repo,
+          ref: this.config.branch,
+        });
+        baseCommitSha = baseCommit.data.sha;
+        baseTreeSha = baseCommit.data.commit.tree.sha;
+      } catch (error: any) {
+        if (error.status === 404) {
+          this.emptyRepo = true; // branch not created yet
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    // Create new tree (no base_tree for the very first commit)
     const newTree = await this.octokit.rest.git.createTree({
       owner: this.owner,
       repo: this.repo,
-      base_tree: baseTree,
+      ...(baseTreeSha ? { base_tree: baseTreeSha } : {}),
       tree: treeItems,
     });
-    
+
     // Create commit
     const commitMessage = this.formatCommitMessage(changes);
     const commit = await this.octokit.rest.git.createCommit({
@@ -389,18 +447,29 @@ export class GitHubBackend extends BaseSyncBackend {
       repo: this.repo,
       message: commitMessage,
       tree: newTree.data.sha,
-      parents: [baseCommit.data.sha],
+      parents: baseCommitSha ? [baseCommitSha] : [],
     });
-    
-    // Update branch reference
-    await this.octokit.rest.git.updateRef({
-      owner: this.owner,
-      repo: this.repo,
-      ref: `heads/${this.config.branch}`,
-      sha: commit.data.sha,
-      force: false,
-    });
-    
+
+    if (this.emptyRepo) {
+      // First commit ever: create the branch ref
+      await this.octokit.rest.git.createRef({
+        owner: this.owner,
+        repo: this.repo,
+        ref: `refs/heads/${this.config.branch}`,
+        sha: commit.data.sha,
+      });
+      this.emptyRepo = false;
+    } else {
+      // Update branch reference
+      await this.octokit.rest.git.updateRef({
+        owner: this.owner,
+        repo: this.repo,
+        ref: `heads/${this.config.branch}`,
+        sha: commit.data.sha,
+        force: false,
+      });
+    }
+
     this.logger.info(`GitHub push successful: ${commit.data.sha}`);
   }
 
@@ -415,11 +484,21 @@ export class GitHubBackend extends BaseSyncBackend {
     if (this.treeCache.has(cacheKey)) {
       return Array.from(this.treeCache.values());
     }
-    
+
+    let commitSha: string;
+    try {
+      commitSha = (await this.getBranchCommitSha(branch)).sha;
+    } catch (error: any) {
+      if (error.status === 404) {
+        return []; // branch/commit does not exist yet (empty repo)
+      }
+      throw error;
+    }
+
     const response = await this.octokit!.rest.git.getTree({
       owner: this.owner,
       repo: this.repo,
-      tree_sha: (await this.getBranchCommitSha(branch)).sha,
+      tree_sha: commitSha,
       recursive: '1',
     });
     

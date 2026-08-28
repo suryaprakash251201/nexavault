@@ -475,8 +475,19 @@ export class SyncEngine {
         const localFiles = this.buildLocalFileMap();
         
         // Get changes to push
-        const pushChanges = this.changeQueue.getByBackend(backendId);
-        
+        let pushChanges = this.changeQueue.getByBackend(backendId);
+
+        // First-sync bootstrap: if the remote is empty and nothing is
+        // queued, seed the queue with all local files (one-time).
+        const remoteFileCount = remoteManifest?.files ? Object.keys(remoteManifest.files).length : 0;
+        if (pushChanges.length === 0 && remoteFileCount === 0 && localFiles.size > 0) {
+          pushChanges = Array.from(localFiles.entries()).map(([path, state]) =>
+            Change.create(path, state.hash, state.size, state.mtime, [backendId])
+          );
+          this.logger.info(`Bootstrap: scheduling ${pushChanges.length} local files for first ${backendId} push`);
+          this.changeQueue.enqueueBatch(pushChanges);
+        }
+
         // Push changes
         const pushResult = await this.pushChangesToBackend(backend, pushChanges);
         
