@@ -81,6 +81,15 @@ export class S3Backend extends BaseSyncBackend {
     this.prefix = config.prefix || 'vault/';
   }
 
+  override updateConfig(config: any): void {
+    super.updateConfig(config);
+    this.bucket = config.bucket || '';
+    this.prefix = config.prefix || 'vault/';
+    if (this.connected) {
+      this.connected = false; // force reconnect with new config
+    }
+  }
+
   getId(): string {
     return 's3';
   }

@@ -66,6 +66,17 @@ export class GitHubBackend extends BaseSyncBackend {
     }
   }
 
+  override updateConfig(config: any): void {
+    super.updateConfig(config);
+    const [owner = '', repo = ''] = (config.repository || '').split('/');
+    this.owner = owner;
+    this.repo = repo;
+    this.treeCache.clear();
+    if (this.connected) {
+      this.connected = false; // force reconnect with new config
+    }
+  }
+
   getId(): string {
     return 'github';
   }
@@ -76,25 +87,30 @@ export class GitHubBackend extends BaseSyncBackend {
 
   async connect(): Promise<void> {
     if (this.connected) return;
-    
+
     this.logger.info('Connecting to GitHub...');
-    
+
+    // Validate configuration first (clear errors instead of cryptic API errors)
+    if (!this.owner || !this.repo) {
+      throw new Error('GitHub repository not configured. Set it as "owner/repo" in NexaVault settings.');
+    }
+
     // Get token from secure storage
     let token = this.config.personalAccessToken;
     if (!token) {
       token = await this.credentialStore.get('github_token');
     }
-    
+
     if (!token) {
-      throw new Error('GitHub authentication token not configured');
+      throw new Error('GitHub authentication token not configured. Paste a Personal Access Token in NexaVault settings.');
     }
-    
+
     const { Octokit } = await getOctokit();
     this.octokit = new Octokit({
       auth: token,
-      userAgent: 'Nexavault/1.0.0',
+      userAgent: 'NexaVault/1.0.0',
     });
-    
+
     // Test connection
     try {
       await this.octokit.rest.repos.get({ owner: this.owner, repo: this.repo });
@@ -103,6 +119,9 @@ export class GitHubBackend extends BaseSyncBackend {
     } catch (error: any) {
       if (error.status === 401 || error.status === 403) {
         throw new Error('GitHub authentication failed. Check your token and repository permissions.');
+      }
+      if (error.status === 404) {
+        throw new Error(`Repository "${this.owner}/${this.repo}" not found or no access. For private repos, your token must have the "repo" scope.`);
       }
       throw error;
     }
