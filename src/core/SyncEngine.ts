@@ -10,7 +10,7 @@ import { RetryManager } from './RetryManager';
 import { ConflictResolver } from './ConflictResolver';
 import { SyncBackend } from '../backends/SyncBackend';
 import { GitHubBackend } from '../backends/GitHubBackend';
-import { S3Backend } from '../backends/S3Backend';
+import { S3Backend, BackupInfo, BackupSnapshot } from '../backends/S3Backend';
 import { Logger } from '../utils/logger';
 import { Change, ChangeSet } from '../models/Change';
 import { Conflict, ConflictDetectionResult } from '../models/Conflict';
@@ -277,7 +277,8 @@ export class SyncEngine {
   }
 
   /**
-   * Perform S3 backup
+   * Perform a full S3 backup: sync changed files, create a verified
+   * backup snapshot, then prune old backups per retention policy.
    */
   async backupNow(): Promise<SyncResult> {
     if (!this.settings.s3.enabled) {
@@ -286,19 +287,35 @@ export class SyncEngine {
     
     this.logger.info('Starting S3 backup...');
     this.setStatus(SyncStatus.SYNCING);
+    const startTime = Date.now();
     
     try {
       await this.s3Backend.connect();
       
+      // Step 1: upload changed files (incremental)
       const localFiles = this.buildLocalFileMap();
       const changes = this.computeBackupChanges(localFiles);
-      
       const result = await this.pushChangesToBackend(this.s3Backend, changes);
       
+      // Step 2: create the snapshot manifest (only if sync step succeeded)
+      let backup: BackupInfo | null = null;
+      if (result.errors.length === 0) {
+        const manifest = this.manifestManager.getManifest();
+        if (manifest) {
+          backup = await this.s3Backend.createBackup(manifest);
+        }
+      }
+      
+      // Step 3: prune old backups (fail-safe: runs only after new backup verified)
+      const pruned = backup ? await this.s3Backend.pruneBackups(this.settings.s3.retention) : 0;
+      if (pruned > 0) {
+        this.logger.info(`Retention: pruned ${pruned} old backup(s)`);
+      }
+      
       return {
-        success: result.errors.length === 0,
+        success: result.errors.length === 0 && !!backup,
         timestamp: Date.now(),
-        duration: 0, // Will be set by caller
+        duration: Date.now() - startTime,
         changesProcessed: result.pushed.length,
         filesUploaded: result.pushed.filter(c => c.type !== 'delete').length,
         filesDownloaded: 0,
@@ -313,7 +330,7 @@ export class SyncEngine {
           filesDownloaded: 0,
           filesDeleted: result.pushed.filter(c => c.type === 'delete').length,
           errors: result.errors,
-          backupId: `backup-${Date.now()}`,
+          backupId: backup?.id || `backup-${Date.now()}`,
         }],
       };
     } catch (error) {
@@ -322,6 +339,104 @@ export class SyncEngine {
     } finally {
       await this.s3Backend.disconnect();
       this.setStatus(SyncStatus.IDLE);
+    }
+  }
+
+  /**
+   * List all available backups from S3
+   */
+  async listBackups(): Promise<BackupInfo[]> {
+    if (!this.settings.s3.enabled) return [];
+    try {
+      await this.s3Backend.connect();
+      const backups = await this.s3Backend.listBackups();
+      // Enrich with file counts (lazy: only for the first N to limit requests)
+      for (let i = 0; i < Math.min(backups.length, 20); i++) {
+        const snap = await this.s3Backend.getBackupManifest(backups[i].id);
+        if (snap) backups[i].fileCount = Object.keys(snap.files).length;
+      }
+      return backups;
+    } catch (error) {
+      this.logger.error('Failed to list backups', error);
+      return [];
+    } finally {
+      await this.s3Backend.disconnect();
+    }
+  }
+
+  /**
+   * Preview what a restore would change (no writes).
+   */
+  async previewRestore(backupId: string): Promise<{
+    backup: BackupInfo | null;
+    files: string[];
+    newFiles: string[];
+    modifiedFiles: string[];
+    missingFiles: string[]; // in backup but not on remote vault path
+    totalSize: number;
+  }> {
+    await this.s3Backend.connect();
+    try {
+      const snap = await this.s3Backend.getBackupManifest(backupId);
+      if (!snap) return { backup: null, files: [], newFiles: [], modifiedFiles: [], missingFiles: [], totalSize: 0 };
+
+      const backups = await this.s3Backend.listBackups();
+      const backup = backups.find(b => b.id === backupId) || null;
+      const manifest = this.manifestManager.getManifest();
+      const files = Object.keys(snap.files);
+      let totalSize = 0;
+      const newFiles: string[] = [];
+      const modifiedFiles: string[] = [];
+
+      for (const path of files) {
+        const entry = snap.files[path];
+        totalSize += entry.size || 0;
+        const current = manifest?.files[path];
+        if (!current) newFiles.push(path);
+        else if (current.hash !== entry.hash) modifiedFiles.push(path);
+      }
+
+      return { backup, files, newFiles, modifiedFiles, missingFiles: [], totalSize };
+    } finally {
+      await this.s3Backend.disconnect();
+    }
+  }
+
+  /**
+   * Restore a backup. Writes downloaded files into the vault.
+   * Applies only files that exist in the backup snapshot.
+   */
+  async restoreBackup(backupId: string, onProgress?: (done: number, total: number, path: string) => void): Promise<{ restored: number; errors: string[] }> {
+    await this.s3Backend.connect();
+    const restored: string[] = [];
+    const errors: string[] = [];
+
+    try {
+      const snap = await this.s3Backend.getBackupManifest(backupId);
+      if (!snap) throw new Error(`Backup not found: ${backupId}`);
+
+      const paths = Object.keys(snap.files);
+      let done = 0;
+      for (const path of paths) {
+        try {
+          const data = await this.s3Backend.downloadFile(path);
+          await this.vault.adapter.writeBinary(path, data);
+          restored.push(path);
+        } catch (error) {
+          errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        done++;
+        if (onProgress) onProgress(done, paths.length, path);
+      }
+
+      if (errors.length === 0) {
+        this.logger.info(`Restore complete: ${restored.length} files from ${backupId}`);
+      } else {
+        this.logger.error(`Restore finished with ${errors.length} error(s)`, errors);
+      }
+      return { restored: restored.length, errors };
+    } finally {
+      await this.s3Backend.disconnect();
     }
   }
 

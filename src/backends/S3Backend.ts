@@ -29,6 +29,22 @@ interface S3Config extends S3Settings {
   enabled: boolean;
 }
 
+export interface BackupInfo {
+  id: string;
+  name: string;
+  timestamp: number;
+  size: number;
+  fileCount: number;
+  backend: string;
+}
+
+export interface BackupSnapshot {
+  id: string;
+  createdAt: number;
+  deviceId: string;
+  files: Record<string, { hash: string; size: number; mtime: number }>;
+}
+
 // Lazy loader for the S3 AWS SDK - module body only evaluates on first use
 let sdkPromise: Promise<typeof import('@aws-sdk/client-s3')> | null = null;
 function getSdk(): Promise<typeof import('@aws-sdk/client-s3')> {
@@ -438,6 +454,195 @@ export class S3Backend extends BaseSyncBackend {
     return Array.from(new Uint8Array(hashBuffer))
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
+  }
+
+  // ================= BACKUP / RESTORE =================
+
+  /**
+   * Create a backup snapshot: writes a timestamped manifest under
+   * metadata/backups/ and verifies it before returning.
+   */
+  async createBackup(manifest: Manifest): Promise<BackupInfo> {
+    if (!this.client) throw new Error('Not connected');
+
+    const { PutObjectCommand, HeadObjectCommand } = await getSdk();
+    const timestamp = Date.now();
+    const id = `backup-${timestamp}`;
+    const key = `metadata/backups/${id}.json`;
+
+    const payload = {
+      id,
+      createdAt: timestamp,
+      deviceId: manifest.deviceId,
+      files: manifest.files,
+    };
+
+    const body = new TextEncoder().encode(JSON.stringify(payload, null, 2));
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Body: body,
+      ContentType: 'application/json',
+    }));
+
+    // Verify the write succeeded (fail-safe: never report success without check)
+    const verify = await this.client.send(new HeadObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    }));
+    if (!verify || !verify.ETag) {
+      throw new Error('Backup verification failed - backup not recorded');
+    }
+
+    const backup: BackupInfo = {
+      id,
+      name: new Date(timestamp).toISOString().replace(/[:.]/g, '-'),
+      timestamp,
+      size: body.length,
+      fileCount: Object.keys(manifest.files || {}).length,
+      backend: 's3',
+    };
+    this.logger.info(`Backup created: ${id} (${backup.fileCount} files)`);
+    return backup;
+  }
+
+  /**
+   * List all backup snapshots stored under metadata/backups/
+   */
+  async listBackups(): Promise<BackupInfo[]> {
+    if (!this.client) throw new Error('Not connected');
+
+    const { ListObjectsV2Command } = await getSdk();
+    const backups: BackupInfo[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const response = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: 'metadata/backups/',
+        ContinuationToken: continuationToken,
+      }));
+      for (const obj of response.Contents || []) {
+        if (!obj.Key || !obj.Key.endsWith('.json')) continue;
+        const id = obj.Key.split('/').pop()!.replace(/\.json$/, '');
+        backups.push({
+          id,
+          name: id,
+          timestamp: obj.LastModified?.getTime() || 0,
+          size: obj.Size || 0,
+          fileCount: 0,
+          backend: 's3',
+        });
+      }
+      continuationToken = response.NextContinuationToken;
+    } while (continuationToken);
+
+    backups.sort((a, b) => b.timestamp - a.timestamp);
+    return backups;
+  }
+
+  /**
+   * Load a backup snapshot manifest by id
+   */
+  async getBackupManifest(id: string): Promise<BackupSnapshot | null> {
+    if (!this.client) throw new Error('Not connected');
+
+    const { GetObjectCommand } = await getSdk();
+    try {
+      const response = await this.client.send(new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: `metadata/backups/${id}.json`,
+      }));
+      if (!response.Body) return null;
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of response.Body as any) chunks.push(chunk);
+      const text = new TextDecoder().decode(Buffer.concat(chunks));
+      const data = JSON.parse(text);
+      return {
+        id: data.id || id,
+        createdAt: data.createdAt || 0,
+        deviceId: data.deviceId || 'unknown',
+        files: data.files || {},
+      };
+    } catch (error: any) {
+      if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a backup snapshot (used by retention pruning)
+   */
+  async deleteBackup(id: string): Promise<void> {
+    if (!this.client) throw new Error('Not connected');
+
+    const { DeleteObjectCommand } = await getSdk();
+    await this.client.send(new DeleteObjectCommand({
+      Bucket: this.bucket,
+      Key: `metadata/backups/${id}.json`,
+    }));
+    this.logger.info(`Backup deleted: ${id}`);
+  }
+
+  /**
+   * Prune old backups according to retention policy.
+   * Fail-safe: only deletes AFTER the newest backup already exists,
+   * and never deletes the newest backup.
+   */
+  async pruneBackups(retention: { daily: number; weekly: number; monthly: number; maxTotalBackups: number }): Promise<number> {
+    const backups = await this.listBackups();
+    if (backups.length <= 1) return 0;
+
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    const maxTotal = retention.maxTotalBackups || 50;
+
+    const allow = new Set<string>();
+    const newest = backups[0];
+    if (newest) allow.add(newest.id); // never delete newest
+
+    // Daily: newest N backups within last N days
+    const dCount = retention.daily || 0;
+    let dTaken = 0;
+    for (const b of backups) {
+      if (b.timestamp >= now - dCount * day && dTaken < dCount) { allow.add(b.id); dTaken++; }
+    }
+
+    // Weekly: keep N oldest-of-their-week backups
+    const wCount = retention.weekly || 0;
+    const weeks = new Map<string, BackupInfo>();
+    for (const b of backups) {
+      const wk = String(Math.floor(b.timestamp / (7 * day)));
+      if (!weeks.has(wk)) weeks.set(wk, b);
+    }
+    [...weeks.values()].slice(0, wCount).forEach(b => allow.add(b.id));
+
+    // Monthly: keep N first-backup-of-their-month backups
+    const mCount = retention.monthly || 0;
+    const months = new Map<string, BackupInfo>();
+    for (const b of backups) {
+      const d = new Date(b.timestamp);
+      const mk = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      if (!months.has(mk)) months.set(mk, b);
+    }
+    [...months.values()].slice(0, mCount).forEach(b => allow.add(b.id));
+
+    // Enforce total cap
+    let deleted = 0;
+    for (const b of backups.slice(maxTotal)) {
+      if (!allow.has(b.id)) {
+        try {
+          await this.deleteBackup(b.id);
+          deleted++;
+        } catch (error) {
+          this.logger.error(`Failed to prune backup ${b.id}`, error);
+        }
+      }
+    }
+    if (deleted > 0) this.logger.info(`Pruned ${deleted} old backup(s)`);
+    return deleted;
   }
 
   getCapabilities() {

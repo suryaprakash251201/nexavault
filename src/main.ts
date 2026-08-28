@@ -61,6 +61,9 @@ export default class NexavaultPlugin extends Plugin {
   // Credential store
   credentialStore: SecureCredentialStore | null = null;
   
+  // Pending restore selection (set by openRestore, consumed by view)
+  private pendingRestoreId: string | null = null;
+  
   // Logger
   logger!: Logger;
 
@@ -216,7 +219,11 @@ export default class NexavaultPlugin extends Plugin {
     // Restore view
     this.registerView(
       'nexavault-restore',
-      (leaf) => (this.restoreView = new RestoreView(leaf, this))
+      (leaf) => {
+        const view = new RestoreView(leaf, this, this.pendingRestoreId || undefined);
+        this.pendingRestoreId = null;
+        return (this.restoreView = view);
+      }
     );
   }
 
@@ -393,7 +400,8 @@ export default class NexavaultPlugin extends Plugin {
     }
   }
 
-  openRestore() {
+  openRestore(backupId?: string) {
+    this.pendingRestoreId = backupId || null;
     this.app.workspace.getLeavesOfType('nexavault-restore').forEach((leaf) => leaf.detach());
     const leaf = this.app.workspace.getRightLeaf(false);
     if (leaf) {
