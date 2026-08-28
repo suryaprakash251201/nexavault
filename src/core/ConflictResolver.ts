@@ -100,11 +100,20 @@ export class ConflictResolver {
     // Remote deleted, local unchanged
     if (localExists && !remoteExists) {
       const manifestEntry = this.manifestManager.getFileEntry(path);
-      if (manifestEntry && manifestEntry.hash === localState.hash) {
+      const wasSynced = !!manifestEntry?.lastSyncedHash;
+
+      // Never synced to the remote before: this is a plain "create" push,
+      // NOT a conflict (e.g. first sync against an empty bucket).
+      if (!wasSynced) return null;
+
+      if (manifestEntry.hash === localState.hash) {
+        // File was synced, remote version disappeared while local is unchanged:
+        // remote deleted it -> surface as conflict so the user decides.
         return this.createConflict(path, 'local_modified_remote_deleted', localState, remoteState);
       }
-      // Both deleted - no conflict
-      if (!manifestEntry) return null;
+      // Local modified since it was synced, remote gone: pushing the local
+      // update is safe (nothing remote to lose) - no conflict.
+      return null;
     }
     
     // Both exist but different

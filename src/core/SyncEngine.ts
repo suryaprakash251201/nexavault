@@ -695,6 +695,7 @@ export class SyncEngine {
       case 'create':
       case 'modify': {
         const data = await this.getBackendForChange(change).downloadFile(change.remotePath || path);
+        await this.ensureParentDir(path); // nested files need existing folders
         await this.vault.adapter.writeBinary(path, data);
         break;
       }
@@ -721,6 +722,25 @@ export class SyncEngine {
    * Diff remote manifest against local manifest to compute changes
    * that need to be pulled. Conservative about deletions.
    */
+  /**
+   * Best-effort creation of all missing parent folders for a path.
+   * (vault.adapter.writeBinary throws ENOENT if a parent folder does
+   *  not exist, which happened for nested files pulled from S3.)
+   */
+  private async ensureParentDir(path: string): Promise<void> {
+    const parts = normalizePath(path).split('/');
+    parts.pop();
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      try {
+        await this.vault.adapter.mkdir(acc);
+      } catch {
+        // folder already exists (or is a file) - fine
+      }
+    }
+  }
+
   private async fetchChangesFromBackend(
     backend: SyncBackend,
     remoteManifest: any,
