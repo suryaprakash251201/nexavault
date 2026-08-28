@@ -75,6 +75,9 @@ export class ConflictResolver {
     localState: FileState | undefined,
     remoteState: FileState | undefined
   ): Promise<Conflict | null> {
+    // Defensive: never crash if dependencies were not injected yet
+    if (!this.manifestManager) return null;
+    
     const localExists = !!localState;
     const remoteExists = !!remoteState;
     

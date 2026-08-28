@@ -65,6 +65,18 @@ export default class NexavaultPlugin extends Plugin {
   logger!: Logger;
 
   async onload() {
+    try {
+    await this.onloadInternal();
+    } catch (error) {
+      console.error('[Nexavault] Failed to load plugin:', error);
+      try {
+        new Notice(`Nexavault failed to load: ${error instanceof Error ? error.message : String(error)}. See Help › Show debug console.`);
+      } catch { /* notice may fail too */ }
+      throw error;
+    }
+  }
+
+  private async onloadInternal() {
     this.logger = new Logger('Nexavault');
     this.logger.info('Loading Nexavault plugin...');
 
@@ -138,6 +150,14 @@ export default class NexavaultPlugin extends Plugin {
   }
 
   async onunload() {
+    try {
+      await this.onunloadInternal();
+    } catch (error) {
+      console.error('[Nexavault] Error during unload:', error);
+    }
+  }
+
+  private async onunloadInternal() {
     this.logger.info('Unloading Nexavault plugin...');
     
     // Stop services
@@ -311,6 +331,9 @@ export default class NexavaultPlugin extends Plugin {
       
       // Initialize credential store (auto-unlock with machine-local key)
       await this.credentialStore?.initialize();
+      
+      // Wire conflict resolver dependencies (manifest + hash manager)
+      this.conflictResolver?.setDependencies(this.manifestManager!, this.hashManager!);
       
       // Initialize manifest
       await this.manifestManager?.initialize();

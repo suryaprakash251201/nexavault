@@ -45,6 +45,15 @@ export class Logger {
   private sanitizeData(data: any): any {
     if (!data) return data;
     
+    // Preserve error details (message/name/stack are non-enumerable on Error)
+    if (data instanceof Error) {
+      return {
+        name: data.name,
+        message: data.message,
+        ...(data.stack ? { stack: data.stack.split('\n').slice(0, 6).join('\n') } : {}),
+      };
+    }
+    
     const sensitiveKeys = [
       'token', 'password', 'secret', 'key', 'credential',
       'accessKey', 'secretKey', 'authorization', 'auth',
