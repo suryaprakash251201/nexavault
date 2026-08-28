@@ -327,11 +327,35 @@ export class GitHubBackend extends BaseSyncBackend {
       }));
   }
 
+  private static readonly MAX_BLOB_SIZE = 100 * 1024 * 1024; // GitHub blob limit
+
+  /**
+   * Map GitHub API errors to precise, actionable messages
+   */
+  private mapApiError(error: any): Error {
+    const status = error?.status ?? error?.response?.status;
+    // Rate limiting: 403 with exhausted quota, or 429
+    const remaining = error?.response?.headers?.['x-ratelimit-remaining'];
+    if (status === 403 && remaining === '0') {
+      return new Error('GitHub API rate limit exceeded. Wait for the rate window to reset (check x-ratelimit-reset), or sync again later.');
+    }
+    if (status === 429) {
+      return new Error('GitHub API rate limited (429). NexaVault will retry after the backoff period.');
+    }
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
   async pushChanges(changes: Change[]): Promise<void> {
     if (!this.octokit) throw new Error('Not connected');
     if (changes.length === 0) return;
-    
+
     this.logger.info(`Pushing ${changes.length} changes to GitHub...`);
+
+    try {
+
+    // Cache invalidation: after any successful push the remote tree changed,
+    // so the treeCache (used by getRemoteManifest) must be cleared.
+    const invalidateAfter = () => { this.treeCache.clear(); };
 
     // Empty repo: GitHub's git-DB API refuses (409 "Git Repository is empty").
     // Use the Contents API instead - the first write creates the initial
@@ -359,6 +383,7 @@ export class GitHubBackend extends BaseSyncBackend {
         await this.uploadFile(change.path, data);
       }
       this.emptyRepo = false;
+      invalidateAfter();
       this.logger.info('Bootstrap push complete - branch and initial commits created');
       return;
     }
@@ -392,6 +417,12 @@ export class GitHubBackend extends BaseSyncBackend {
           throw new Error('GitHub backend has no file reader - file upload disabled');
         }
         const data = await this.fileReader(change.path);
+
+        // GitHub blob API limit is 100 MB - fail clearly instead of a 422 batch failure
+        if (data.length > GitHubBackend.MAX_BLOB_SIZE) {
+          throw new Error(`GitHub file too large (${(data.length / 1024 / 1024).toFixed(1)} MB, limit 100 MB): ${change.path}`);
+        }
+
         const content = Buffer.from(data).toString('base64');
 
         // Create blob
@@ -470,7 +501,11 @@ export class GitHubBackend extends BaseSyncBackend {
       });
     }
 
+    invalidateAfter();
     this.logger.info(`GitHub push successful: ${commit.data.sha}`);
+    } catch (error) {
+      throw this.mapApiError(error);
+    }
   }
 
   async pullChanges(): Promise<RemoteChange[]> {

@@ -108,6 +108,8 @@ export class Change {
         'invalid',
         'unauthorized',
         'forbidden',
+        'too large',
+        'file too large',
       ];
       const lowerError = this.error.toLowerCase();
       if (permanentErrors.some(e => lowerError.includes(e))) {

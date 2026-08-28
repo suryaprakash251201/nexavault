@@ -2,7 +2,7 @@
  * SyncEngine - Core synchronization orchestration
  */
 
-import { App, Vault, TFile } from 'obsidian';
+import { App, Vault, TFile, Notice } from 'obsidian';
 import { VaultSyncSettings } from '../models/Settings';
 import { ManifestManager } from './ManifestManager';
 import { ChangeQueue } from './ChangeQueue';
@@ -159,9 +159,13 @@ export class SyncEngine {
       
       return result;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       this.logger.error('Sync failed', error);
       this.setStatus(SyncStatus.ERROR);
-      return this.createEmptyResult(false, error instanceof Error ? error.message : 'Unknown error');
+      if (this.settings.general.showNotifications) {
+        try { new Notice(`NexaVault sync error: ${message}`); } catch { /* notice may fail */ }
+      }
+      return this.createEmptyResult(false, message);
     } finally {
       this.isSyncing = false;
       await this.disconnectBackends();
@@ -481,11 +485,20 @@ export class SyncEngine {
         // queued, seed the queue with all local files (one-time).
         const remoteFileCount = remoteManifest?.files ? Object.keys(remoteManifest.files).length : 0;
         if (pushChanges.length === 0 && remoteFileCount === 0 && localFiles.size > 0) {
-          pushChanges = Array.from(localFiles.entries()).map(([path, state]) =>
-            Change.create(path, state.hash, state.size, state.mtime, [backendId])
-          );
-          this.logger.info(`Bootstrap: scheduling ${pushChanges.length} local files for first ${backendId} push`);
-          this.changeQueue.enqueueBatch(pushChanges);
+          // Only seed files that have never been synced for this backend
+          const manifest = this.manifestManager.getManifest();
+          pushChanges = Array.from(localFiles.entries())
+            .filter(([path, state]) => {
+              const entry = manifest?.files[path];
+              return !entry || entry.lastSyncedHash !== state.hash;
+            })
+            .map(([path, state]) =>
+              Change.create(path, state.hash, state.size, state.mtime, [backendId])
+            );
+          if (pushChanges.length > 0) {
+            this.logger.info(`Bootstrap: scheduling ${pushChanges.length} local files for first ${backendId} push`);
+            this.changeQueue.enqueueBatch(pushChanges);
+          }
         }
 
         // Push changes
