@@ -45,6 +45,15 @@ export class GitHubBackend extends BaseSyncBackend {
   private owner = '';
   private repo = '';
   private treeCache: Map<string, GitHubTreeItem> = new Map();
+  private fileReader: ((path: string) => Promise<Uint8Array>) | null = null;
+
+  /**
+   * Inject a vault file reader (wired by SyncEngine).
+   * Never uploads silently-empty files: without a reader, pushes throw.
+   */
+  setFileReader(reader: (path: string) => Promise<Uint8Array>): void {
+    this.fileReader = reader;
+  }
 
   constructor(config: GitHubConfig, logger: Logger, credentialStore: SecureCredentialStore) {
     super(config, logger);
@@ -293,8 +302,18 @@ export class GitHubBackend extends BaseSyncBackend {
     const treeItems = [];
     
     for (const change of changes) {
+      // Renames also remove the old path
+      if (change.type === 'rename' && change.oldPath) {
+        treeItems.push({
+          path: this.getFullPath(change.oldPath),
+          mode: '100644' as const,
+          type: 'blob' as const,
+          sha: null as any,
+        });
+      }
+
       const fullPath = this.getFullPath(change.path);
-      
+
       if (change.type === 'delete') {
         treeItems.push({
           path: fullPath,
@@ -303,10 +322,13 @@ export class GitHubBackend extends BaseSyncBackend {
           sha: null as any,
         });
       } else {
-        // Read file content
-        const data = await this.readLocalFile(change.path);
+        // Read file content through the injected vault reader
+        if (!this.fileReader) {
+          throw new Error('GitHub backend has no file reader - file upload disabled');
+        }
+        const data = await this.fileReader(change.path);
         const content = Buffer.from(data).toString('base64');
-        
+
         // Create blob
         const blob = await this.octokit.rest.git.createBlob({
           owner: this.owner,
@@ -314,7 +336,7 @@ export class GitHubBackend extends BaseSyncBackend {
           content,
           encoding: 'base64',
         });
-        
+
         treeItems.push({
           path: fullPath,
           mode: '100644' as const,
@@ -434,11 +456,7 @@ export class GitHubBackend extends BaseSyncBackend {
       .replace('{rename}', counts.rename.toString());
   }
 
-  private async readLocalFile(path: string): Promise<Uint8Array> {
-    // This would be injected via the SyncEngine
-    // For now, return empty - the SyncEngine handles file reading
-    return new Uint8Array();
-  }
+  // File reading is delegated to the vault reader injected via setFileReader
 
   private async computeHash(data: Uint8Array): Promise<string> {
     const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;

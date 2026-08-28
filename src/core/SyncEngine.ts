@@ -57,6 +57,17 @@ export class SyncEngine {
     this.githubBackend = githubBackend;
     this.s3Backend = s3Backend;
     this.logger = logger;
+
+    // Inject vault readers so backends can read file contents directly
+    const vaultReader = async (path: string): Promise<Uint8Array> => {
+      const file = this.vault.getAbstractFileByPath(normalizePath(path));
+      if (file instanceof TFile) {
+        return new Uint8Array(await this.vault.readBinary(file));
+      }
+      throw new Error(`File not found in vault: ${path}`);
+    };
+    this.githubBackend.setFileReader(vaultReader);
+    this.s3Backend.setFileReader(vaultReader);
   }
 
   updateSettings(settings: VaultSyncSettings): void {
@@ -594,7 +605,7 @@ export class SyncEngine {
   }
 
   /**
-   * Pull changes from a specific backend
+   * Pull changes from a specific backend (diff based)
    */
   private async pullChangesFromBackend(
     backend: SyncBackend,
@@ -603,28 +614,31 @@ export class SyncEngine {
   ): Promise<{ applied: Change[]; errors: SyncError[] }> {
     const applied: Change[] = [];
     const errors: SyncError[] = [];
-    
+
     try {
-      const remoteChanges = await backend.pullChanges();
-      
+      const remoteChanges = await this.fetchChangesFromBackend(backend, remoteManifest, localFiles);
+
       for (const remoteChange of remoteChanges) {
         const localState = localFiles.get(normalizePath(remoteChange.path));
-        
-        // Check for conflicts
+
+        // Skip paths already flagged as conflicts
         if (localState && localState.hash !== remoteChange.hash) {
-          // Conflict detected - would be handled by conflict resolver
           continue;
         }
-        
+
         // Apply change
         try {
           await this.applyRemoteChange(remoteChange);
-          applied.push(Change.modify(
-            remoteChange.path,
-            remoteChange.hash,
-            remoteChange.size,
-            remoteChange.mtime
-          ));
+          if (remoteChange.type === 'delete') {
+            applied.push(Change.delete(remoteChange.path));
+          } else {
+            applied.push(Change.modify(
+              remoteChange.path,
+              remoteChange.hash,
+              remoteChange.size,
+              remoteChange.mtime
+            ));
+          }
         } catch (error) {
           errors.push({
             path: remoteChange.path,
@@ -643,7 +657,7 @@ export class SyncEngine {
         timestamp: Date.now(),
       });
     }
-    
+
     return { applied, errors };
   }
 
@@ -680,16 +694,70 @@ export class SyncEngine {
   }
 
   /**
-   * Fetch changes from backend that need to be pulled
+   * Diff remote manifest against local manifest to compute changes
+   * that need to be pulled. Conservative about deletions.
    */
   private async fetchChangesFromBackend(
     backend: SyncBackend,
     remoteManifest: any,
     localFiles: Map<string, FileState>
   ): Promise<RemoteChange[]> {
-    // This would compare manifests and return needed changes
-    // Simplified for now
-    return [];
+    if (!remoteManifest?.files) return [];
+
+    const changes: RemoteChange[] = [];
+    const localManifest = this.manifestManager.getManifest();
+    const remoteFiles = remoteManifest.files as Record<string, { hash: string; size: number; mtime: number }>;
+    const remotePaths = new Set(Object.keys(remoteFiles));
+    const localPaths = new Set(localFiles.keys());
+
+    // New / modified remote files
+    for (const [path, remoteEntry] of Object.entries(remoteFiles)) {
+      const localState = localFiles.get(normalizePath(path));
+      if (!localState) {
+        changes.push({
+          path, hash: remoteEntry.hash, size: remoteEntry.size, mtime: remoteEntry.mtime,
+          type: 'create', backendId: backend.getId(),
+        });
+      } else if (localState.hash !== remoteEntry.hash) {
+        changes.push({
+          path, hash: remoteEntry.hash, size: remoteEntry.size, mtime: remoteEntry.mtime,
+          type: 'modify', backendId: backend.getId(),
+        });
+      }
+    }
+
+    // Conservative deletions: only when the local file is unchanged since the
+    // last successful sync (lastSyncedHash === hash). Otherwise the local
+    // modification wins / becomes a conflict - never silently delete.
+    const deletions: RemoteChange[] = [];
+    for (const path of localPaths) {
+      if (!remotePaths.has(path)) {
+        const localState = localFiles.get(path);
+        const manifestEntry = localManifest?.files[path];
+        if (
+          localState && manifestEntry &&
+          manifestEntry.lastSyncedHash &&
+          manifestEntry.lastSyncedHash === localState.hash
+        ) {
+          deletions.push({
+            path, hash: localState.hash, size: localState.size, mtime: localState.mtime,
+            type: 'delete', backendId: backend.getId(),
+          });
+        }
+      }
+    }
+
+    // Delete-safety: if a large number of files would be deleted at once,
+    // do not auto-apply - surface for review instead.
+    const threshold = this.settings.advanced.deleteSafetyThreshold;
+    if (deletions.length > 0 && deletions.length <= threshold) {
+      changes.push(...deletions);
+    } else if (deletions.length > threshold) {
+      this.logger.warn(`Detected ${deletions.length} deletions (> threshold ${threshold}) - skipping auto-apply for safety`);
+      this.setStatus(SyncStatus.CONFLICT);
+    }
+
+    return changes;
   }
 
   /**

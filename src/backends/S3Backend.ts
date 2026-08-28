@@ -65,6 +65,14 @@ export class S3Backend extends BaseSyncBackend {
   private encryptionService: EncryptionService | null = null;
   private bucket: string;
   private prefix: string;
+  private fileReader: ((path: string) => Promise<Uint8Array>) | null = null;
+
+  /**
+   * Inject a vault file reader (wired by SyncEngine)
+   */
+  setFileReader(reader: (path: string) => Promise<Uint8Array>): void {
+    this.fileReader = reader;
+  }
 
   constructor(config: S3Config, logger: Logger, credentialStore: SecureCredentialStore) {
     super(config, logger);
@@ -394,8 +402,12 @@ export class S3Backend extends BaseSyncBackend {
     switch (change.type) {
       case 'create':
       case 'modify': {
-        // Read file from vault (would be provided by SyncEngine)
-        throw new Error('File data not provided - use uploadFile directly');
+        if (!this.fileReader) {
+          throw new Error('S3 backend has no file reader - file upload disabled');
+        }
+        const data = await this.fileReader(change.path);
+        await this.uploadFile(path, data);
+        break;
       }
       case 'delete': {
         await this.deleteFile(path);
