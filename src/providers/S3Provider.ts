@@ -40,6 +40,7 @@ export abstract class S3Provider {
       region: config.defaultRegion,
       multipartThresholdMB: config.defaultMultipartThreshold,
       multipartChunksizeMB: config.defaultMultipartChunksize,
+      forcePathStyle: config.supportsPathStyle,
     };
   }
   

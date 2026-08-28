@@ -13,6 +13,9 @@ export class RestoreView extends ItemView {
   private selectedBackupId: string | null = null;
   private restoreBtn!: HTMLButtonElement;
   private progressEl!: HTMLElement;
+  private progressTrackEl!: HTMLElement;
+  private progressFillEl!: HTMLElement;
+  private progressLabelEl!: HTMLElement;
   private backups: any[] = [];
 
   constructor(leaf: WorkspaceLeaf, plugin: any, preselectId?: string) {
@@ -81,6 +84,10 @@ export class RestoreView extends ItemView {
     this.previewEl.style.minHeight = '200px';
     this.progressEl = rightPanel.createDiv({ cls: 'nexavault-restore-progress' });
     this.progressEl.style.marginTop = '16px';
+    this.progressTrackEl = this.progressEl.createDiv({ cls: 'nexavault-progress-track' });
+    this.progressFillEl = this.progressTrackEl.createDiv({ cls: 'nexavault-progress-fill' });
+    this.progressLabelEl = this.progressEl.createDiv({ cls: 'nexavault-progress-label' });
+    this.progressLabelEl.style.marginTop = '6px';
     this.showEmptyPreview();
 
     // Bottom actions
@@ -257,20 +264,25 @@ export class RestoreView extends ItemView {
 
     this.restoreBtn.disabled = true;
     this.restoreBtn.textContent = 'Restoring...';
+    this.progressEl.addClass('nexavault-active');
 
     try {
       const result = await engine.restoreBackup(this.selectedBackupId, (done, total, path) => {
-        this.progressEl.textContent = `Restoring ${done}/${total}: ${path}`;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        this.progressFillEl.style.width = `${pct}%`;
+        this.progressLabelEl.textContent = `Restoring ${done}/${total}: ${path}`;
       });
-      this.progressEl.textContent = `Restore finished: ${result.restored} files restored, ${result.errors.length} errors.`;
+      this.progressFillEl.style.width = '100%';
+      this.progressLabelEl.textContent =
+        `Restore finished: ${result.restored} files restored, ${result.errors.length} error(s).`;
       if (result.errors.length > 0) {
         this.logger.error('Restore errors', result.errors);
       }
       this.restoreBtn.textContent = 'Done';
     } catch (error) {
-      this.progressEl.textContent = `Restore failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.progressLabelEl.textContent = `Restore failed: ${error instanceof Error ? error.message : String(error)}`;
       this.restoreBtn.disabled = false;
-      this.restoreBtn.textContent = 'Restore Selected';
+      this.restoreBtn.textContent = 'Retry Restore';
     }
   }
 

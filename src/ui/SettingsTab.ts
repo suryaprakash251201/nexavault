@@ -360,6 +360,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
     
+    new Setting(containerEl)
+      .setName('Use Path-Style Addressing')
+      .setDesc('Use endpoint/bucket/key format instead of bucket.endpoint/key. Required by MinIO and most non-AWS S3 services (CloudPE, Wasabi, custom endpoints).')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.s3.forcePathStyle)
+        .onChange(async (value) => {
+          this.plugin.settings.s3.forcePathStyle = value;
+          await this.plugin.saveSettings();
+        }));
+    
     // Credentials
     containerEl.createEl('h3', { text: 'Credentials', style: 'margin-top: 24px; margin-bottom: 12px;' });
     

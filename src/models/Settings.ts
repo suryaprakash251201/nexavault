@@ -50,6 +50,8 @@ export interface S3Settings {
   retention: RetentionSettings;
   multipartThresholdMB: number;
   multipartChunksizeMB: number;
+  /** Use path-style addressing (endpoint/bucket/key) instead of virtual-hosted (bucket.endpoint/key) */
+  forcePathStyle: boolean;
   encryption?: EncryptionSettings;
 }
 
@@ -163,6 +165,7 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
     },
     multipartThresholdMB: 100,
     multipartChunksizeMB: 50,
+    forcePathStyle: false,
   },
   encryption: {
     enabled: false,

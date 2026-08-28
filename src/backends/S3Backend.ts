@@ -140,7 +140,7 @@ export class S3Backend extends BaseSyncBackend {
         secretAccessKey,
         ...(sessionToken && { sessionToken }),
       },
-      forcePathStyle: this.config.provider === 'minio' || this.config.provider === 'custom',
+      forcePathStyle: this.config.forcePathStyle ?? (this.config.provider === 'minio' || this.config.provider === 'custom'),
     });
 
     // Initialize encryption if enabled

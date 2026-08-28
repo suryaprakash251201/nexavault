@@ -198,6 +198,16 @@ export class SyncDashboardView extends ItemView {
 
   private updateMainStatus(status: SyncStatus): void {
     this.statusEl.empty();
+    this.statusEl.removeClass('nexavault-syncing', 'nexavault-offline', 'nexavault-error', 'nexavault-conflict');
+    if (status === SyncStatus.SYNCING || status === SyncStatus.SCANNING || status === SyncStatus.QUEUED) {
+      this.statusEl.addClass('nexavault-syncing');
+    } else if (status === SyncStatus.OFFLINE) {
+      this.statusEl.addClass('nexavault-offline');
+    } else if (status === SyncStatus.ERROR) {
+      this.statusEl.addClass('nexavault-error');
+    } else if (status === SyncStatus.CONFLICT) {
+      this.statusEl.addClass('nexavault-conflict');
+    }
     
     const icon = SYNC_STATUS_ICONS[status] || '?';
     const label = SYNC_STATUS_LABELS[status] || 'Unknown';

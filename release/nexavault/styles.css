@@ -1,32 +1,250 @@
-/* NexaVault - Obsidian plugin styles */
+/* ==========================================================================
+   NexaVault - UI/UX design system
+   ========================================================================== */
 
+/* ---------- Design tokens ---------- */
+.theme-light {
+  --nexavault-bg: rgba(255, 255, 255, 0.55);
+  --nexavault-border: var(--background-modifier-border);
+  --nexavault-shadow: 0 2px 8px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --nexavault-shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.10), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --nexavault-accent-soft: rgba(94, 129, 172, 0.12);
+  --nexavault-success-soft: rgba(67, 160, 71, 0.12);
+  --nexavault-warning-soft: rgba(219, 146, 43, 0.14);
+  --nexavault-error-soft: rgba(211, 47, 47, 0.12);
+}
+.theme-dark {
+  --nexavault-bg: rgba(0, 0, 0, 0.30);
+  --nexavault-border: var(--background-modifier-border);
+  --nexavault-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --nexavault-shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.35);
+  --nexavault-accent-soft: rgba(94, 129, 172, 0.20);
+  --nexavault-success-soft: rgba(67, 160, 71, 0.20);
+  --nexavault-warning-soft: rgba(219, 146, 43, 0.20);
+  --nexavault-error-soft: rgba(211, 47, 47, 0.20);
+}
+
+/* ---------- Animations ---------- */
 @keyframes nexavault-spin {
   from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes nexavault-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.92); }
+}
+@keyframes nexavault-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes nexavault-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+@keyframes nexavault-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--nexavault-accent-soft); }
+  50%      { box-shadow: 0 0 0 4px var(--nexavault-accent-soft); }
 }
 
+/* ---------- Status bar ---------- */
+.nexavault-status-bar .nexavault-status {
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 2px 8px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.nexavault-status-bar .nexavault-status:hover {
+  background: var(--nexavault-accent-soft);
+}
 .nexavault-status-icon {
   display: inline-flex;
+  line-height: 1;
+}
+.nexavault-status.nexavault-syncing .nexavault-status-icon {
+  animation: nexavault-spin 1.2s linear infinite;
+}
+.nexavault-status.nexavault-offline .nexavault-status-icon {
+  animation: nexavault-pulse 2s ease-in-out infinite;
 }
 
-.nexavault-status.nexavault-syncing .nexavault-status-icon,
+/* ---------- Dashboard ---------- */
+.nexavault-dashboard {
+  animation: nexavault-fade-in 0.25s ease;
+}
+.nexavault-section {
+  animation: nexavault-fade-in 0.3s ease;
+}
 .nexavault-main-icon {
+  display: inline-flex;
+  animation: none;
+}
+.nexavault-status-main.nexavault-syncing .nexavault-main-icon {
   animation: nexavault-spin 1.2s linear infinite;
 }
 
+/* Backend cards */
 .nexavault-backend-card {
-  transition: opacity 0.2s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.nexavault-backend-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--nexavault-shadow-hover);
+  border-color: var(--interactive-accent);
+}
+.nexavault-backend-card .nexavault-backend-icon svg {
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+.nexavault-backend-card:hover .nexavault-backend-icon svg {
+  transform: scale(1.12);
+  color: var(--interactive-accent);
+}
+.nexavault-backend-card.nexavault-connected {
+  border-color: var(--nexavault-success-soft);
+}
+.nexavault-backend-card.nexavault-error {
+  border-color: var(--nexavault-error-soft);
 }
 
+/* Action buttons */
+.nexavault-actions button {
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.nexavault-actions button:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--nexavault-shadow);
+}
+.nexavault-actions button:active {
+  transform: translateY(0);
+}
+
+/* Activity list */
+.nexavault-activity-item {
+  transition: background 0.15s ease;
+}
+.nexavault-activity-item:hover {
+  background: var(--nexavault-accent-soft);
+}
+.nexavault-activity-item svg {
+  transition: color 0.2s ease;
+}
+
+/* ---------- Conflicts ---------- */
+.nexavault-conflict-card {
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  animation: nexavault-fade-in 0.3s ease;
+}
+.nexavault-conflict-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--nexavault-shadow-hover);
+}
+.nexavault-conflict-card .nexavault-conflict-type {
+  animation: nexavault-glow 2.5s ease-in-out infinite;
+}
+.nexavault-conflict-actions button {
+  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.nexavault-conflict-actions button:hover {
+  transform: translateY(-1px);
+  background: var(--nexavault-accent-soft);
+}
+
+/* ---------- Backups ---------- */
+.nexavault-backup-card {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  animation: nexavault-fade-in 0.25s ease;
+}
+.nexavault-backup-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--nexavault-shadow-hover);
+  border-color: var(--interactive-accent);
+}
+.nexavault-backup-card .nexavault-backup-icon svg {
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+.nexavault-backup-card:hover .nexavault-backup-icon svg {
+  transform: scale(1.1) rotate(-6deg);
+  color: var(--interactive-accent);
+}
+.nexavault-backup-card button {
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.nexavault-backup-card button:hover {
+  transform: translateY(-1px);
+}
+
+/* ---------- Restore ---------- */
+.nexavault-restore-backup-item {
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.nexavault-restore-backup-item:hover {
+  transform: translateX(2px);
+}
+
+/* Progress bar */
+.nexavault-restore-progress {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  background: var(--background-secondary);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 12px;
+}
+.nexavault-restore-progress.nexavault-active {
+  opacity: 1;
+}
+.nexavault-progress-track {
+  height: 8px;
+  background: var(--background-modifier-border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.nexavault-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--interactive-accent);
+  transition: width 0.3s ease;
+  background-image: linear-gradient(90deg, var(--interactive-accent), var(--text-accent));
+}
+
+/* ---------- Empty / loading states ---------- */
+.nexavault-empty-state svg {
+  animation: nexavault-pulse 3s ease-in-out infinite;
+}
+.nexavault-loading-skeleton {
+  background: linear-gradient(90deg, var(--background-secondary) 25%, var(--background-modifier-hover) 50%, var(--background-secondary) 75%);
+  background-size: 800px 100%;
+  animation: nexavault-shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+
+/* ---------- Settings ---------- */
+.nexavault-setup-instructions {
+  white-space: normal;
+  line-height: 1.6;
+}
+.nexavault-encryption-warning {
+  animation: nexavault-pulse 4s ease-in-out infinite;
+}
+
+/* ---------- Scrollbars ---------- */
 .nexavault-backups-list::-webkit-scrollbar,
 .nexavault-restore-left::-webkit-scrollbar,
-.nexavault-restore-right::-webkit-scrollbar {
+.nexavault-restore-right::-webkit-scrollbar,
+.nexavault-conflicts-list::-webkit-scrollbar {
   width: 8px;
 }
-
 .nexavault-backups-list::-webkit-scrollbar-thumb,
 .nexavault-restore-left::-webkit-scrollbar-thumb,
-.nexavault-restore-right::-webkit-scrollbar-thumb {
+.nexavault-restore-right::-webkit-scrollbar-thumb,
+.nexavault-conflicts-list::-webkit-scrollbar-thumb {
   background: var(--background-modifier-border);
   border-radius: 4px;
+}
+.nexavault-backups-list::-webkit-scrollbar-thumb:hover,
+.nexavault-restore-left::-webkit-scrollbar-thumb:hover,
+.nexavault-restore-right::-webkit-scrollbar-thumb:hover,
+.nexavault-conflicts-list::-webkit-scrollbar-thumb:hover {
+  background: var(--interactive-accent);
 }

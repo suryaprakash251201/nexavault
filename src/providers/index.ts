@@ -9,6 +9,7 @@ import { AWSProvider } from './AWSProvider';
 import { R2Provider } from './R2Provider';
 import { B2Provider } from './B2Provider';
 import { MinIOProvider } from './MinIOProvider';
+import { CustomProvider } from './CustomProvider';
 import { S3ProviderType, ProviderConfig } from '../models/Settings';
 
 const providers = new Map<S3ProviderType, S3Provider>([
@@ -16,6 +17,7 @@ const providers = new Map<S3ProviderType, S3Provider>([
   ['r2', new R2Provider()],
   ['b2', new B2Provider()],
   ['minio', new MinIOProvider()],
+  ['custom', new CustomProvider()],
 ]);
 
 export function getProvider(type: S3ProviderType): S3Provider {
