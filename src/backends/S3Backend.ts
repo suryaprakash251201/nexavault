@@ -110,27 +110,39 @@ export class S3Backend extends BaseSyncBackend {
 
     this.logger.info(`Connecting to ${this.getName()}...`);
 
-    // Get credentials from secure storage
-    let accessKeyId = this.config.accessKeyId;
-    let secretAccessKey = this.config.secretAccessKey;
-    let sessionToken = this.config.sessionToken;
+    // Get credentials from secure storage (try canonical + legacy keys)
+    const getCred = async (fromConfig: string | undefined, storeKeys: string[]): Promise<string | undefined> => {
+      if (fromConfig) return fromConfig;
+      for (const key of storeKeys) {
+        const value = await this.credentialStore.get(key);
+        if (value) return value;
+      }
+      return undefined;
+    };
 
-    if (!accessKeyId) accessKeyId = await this.credentialStore.get('s3_access_key');
-    if (!secretAccessKey) secretAccessKey = await this.credentialStore.get('s3_secret_key');
-    if (!sessionToken && this.config.provider === 'aws') {
-      sessionToken = await this.credentialStore.get('s3_session_token');
-    }
+    const accessKeyId = await getCred(this.config.accessKeyId, ['s3_accessKeyId', 's3_access_key']);
+    const secretAccessKey = await getCred(this.config.secretAccessKey, ['s3_secretAccessKey', 's3_secret_key']);
+    const sessionToken = await getCred(this.config.sessionToken, ['s3_sessionToken', 's3_session_token']);
 
     if (!accessKeyId || !secretAccessKey) {
-      throw new Error('S3 credentials not configured');
+      throw new Error('S3 credentials not configured. Enter the Access Key ID and Secret Access Key in Settings > S3 (they are stored securely and shown as saved).');
     }
 
     // Lazily load the AWS SDK (never executes during plugin load)
     const { S3Client, HeadObjectCommand } = await getSdk();
 
-    // Determine endpoint
+    // Determine endpoint (Cloudflare R2 uses the ACCOUNT ID, not the bucket, in its URL)
     let endpoint = this.config.endpoint;
+    if (!endpoint && this.config.provider === 'r2') {
+      const accountId = await this.credentialStore.get('s3_accountId');
+      endpoint = accountId
+        ? `https://${accountId}.r2.cloudflarestorage.com`
+        : `https://${this.bucket}.r2.cloudflarestorage.com`;
+    }
     if (!endpoint) endpoint = this.getDefaultEndpoint(this.config.provider);
+    if (!endpoint) {
+      throw new Error('S3 endpoint not configured. Enter the endpoint URL in Settings > S3.');
+    }
 
     this.client = new S3Client({
       region: this.config.region,

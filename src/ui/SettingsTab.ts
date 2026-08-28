@@ -208,16 +208,23 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Personal Access Token')
       .setDesc('GitHub PAT with repo permissions (stored securely)')
-      .addText(text => text
-        .setPlaceholder('ghp_************')
-        .setValue('')
-        .onChange(async (value) => {
-          if (value) {
-            await this.credentialStore.set('github_token', value);
-            this.plugin.settings.github.personalAccessToken = value;
-            await this.plugin.saveSettings();
-          }
-        }));
+      .addText(text => {
+        text.setPlaceholder('ghp_************')
+          .setValue('')
+          .onChange(async (value) => {
+            if (value) {
+              await this.credentialStore.set('github_token', value);
+              this.plugin.settings.github.personalAccessToken = value;
+              await this.plugin.saveSettings();
+              text.setPlaceholder('•••••••• (saved)');
+            }
+          });
+        // Show a hint if a token is already stored
+        this.credentialStore.get('github_token').then(v => {
+          if (v) text.setPlaceholder('•••••••• (saved)');
+        });
+        return text;
+      });
     
     // Test connection button
     new Setting(containerEl)
@@ -376,18 +383,26 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     for (const field of config.credentialFields) {
       const key = field.key === 'keyId' ? 'accessKeyId' : 
                   field.key === 'applicationKey' ? 'secretAccessKey' : field.key;
+      const credKey = `s3_${key}`;
       
       new Setting(containerEl)
         .setName(field.label)
         .setDesc(field.description || '')
-        .addText(text => text
-          .setPlaceholder(field.placeholder || '')
-          .setValue('')
-          .onChange(async (value) => {
-            if (value) {
-              await this.credentialStore.set(`s3_${key}`, value);
-            }
-          }));
+        .addText(text => {
+          text.setPlaceholder(field.placeholder || '')
+            .setValue('')
+            .onChange(async (value) => {
+              if (value) {
+                await this.credentialStore.set(credKey, value);
+                text.setPlaceholder('•••••••• (saved)');
+              }
+            });
+          // Show a hint if already stored (fields intentionally render blank)
+          this.credentialStore.get(credKey).then(v => {
+            if (v) text.setPlaceholder('•••••••• (saved)');
+          });
+          return text;
+        });
     }
     
     // Test connection
