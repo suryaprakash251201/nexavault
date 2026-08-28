@@ -1,0 +1,32 @@
+/* NexaVault - Obsidian plugin styles */
+
+@keyframes nexavault-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.nexavault-status-icon {
+  display: inline-flex;
+}
+
+.nexavault-status.nexavault-syncing .nexavault-status-icon,
+.nexavault-main-icon {
+  animation: nexavault-spin 1.2s linear infinite;
+}
+
+.nexavault-backend-card {
+  transition: opacity 0.2s ease;
+}
+
+.nexavault-backups-list::-webkit-scrollbar,
+.nexavault-restore-left::-webkit-scrollbar,
+.nexavault-restore-right::-webkit-scrollbar {
+  width: 8px;
+}
+
+.nexavault-backups-list::-webkit-scrollbar-thumb,
+.nexavault-restore-left::-webkit-scrollbar-thumb,
+.nexavault-restore-right::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border);
+  border-radius: 4px;
+}

@@ -1,11 +1,10 @@
 {
   "id": "nexavault",
-  "name": "Nexavault",
+  "name": "NexaVault",
   "version": "1.0.0",
-  "minAppVersion": "1.0.0",
-  "description": "Vault synchronization and backup engine with GitHub live sync, S3-compatible cloud backup, incremental sync, conflict resolution, and client-side encryption.",
-  "author": "Nexavault Team",
-  "authorUrl": "https://github.com/nexavault",
-  "fundingUrl": "https://github.com/sponsors/nexavault",
+  "minAppVersion": "1.5.0",
+  "description": "GitHub live sync and S3-compatible encrypted backup and restore for your Obsidian vault, with conflict detection and resolution.",
+  "author": "Suryaprakash",
+  "authorUrl": "https://github.com/suryaprakash251201",
   "isDesktopOnly": false
 }

@@ -31,19 +31,24 @@ const context = await esbuild.context({
 if (prod) {
   await context.rebuild();
 
-  // Copy manifest.json into dist so the dist folder is directly installable
-  fs.copyFileSync('manifest.json', path.join('dist', 'manifest.json'));
-
-  // Create a drop-in release folder: release/nexavault/{main.js, manifest.json}
+  // ---- Copy installable artifacts (main.js, manifest.json, styles.css) ----
   const releaseDir = path.join('release', 'nexavault');
   fs.mkdirSync(releaseDir, { recursive: true });
-  fs.copyFileSync(path.join('dist', 'main.js'), path.join(releaseDir, 'main.js'));
-  fs.copyFileSync('manifest.json', path.join(releaseDir, 'manifest.json'));
 
-  // ALSO emit main.js at repo root so `git clone` into a plugin folder
-  // works directly (manifest.json is already at the root).
-  fs.copyFileSync(path.join('dist', 'main.js'), path.join('.', 'main.js'));
-  console.log('✅ main.js written to: repo root, dist/, release/nexavault/');
+  const artifacts = [
+    ['dist/main.js', 'main.js'],
+    ['manifest.json', 'manifest.json'],
+  ];
+  if (fs.existsSync('styles.css')) artifacts.push(['styles.css', 'styles.css']);
+
+  for (const [src, name] of artifacts) {
+    fs.copyFileSync(src, path.join('dist', name));          // dist/
+    fs.copyFileSync(src, path.join(releaseDir, name));      // release/nexavault/
+    fs.copyFileSync(src, path.join('.', name));             // repo root (clone-installable)
+  }
+  // versions.json: repo root (required) + release so users on old versions get updates
+  fs.copyFileSync('versions.json', path.join(releaseDir, 'versions.json'));
+  console.log('✅ Artifacts (main.js, manifest.json, styles.css) at: repo root, dist/, release/nexavault/');
   process.exit(0);
 } else {
   await context.watch();
