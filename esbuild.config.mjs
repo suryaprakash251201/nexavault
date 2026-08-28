@@ -31,21 +31,19 @@ const context = await esbuild.context({
 if (prod) {
   await context.rebuild();
 
-  // Copy manifest.json into dist so the folder is directly installable
+  // Copy manifest.json into dist so the dist folder is directly installable
   fs.copyFileSync('manifest.json', path.join('dist', 'manifest.json'));
-  if (fs.existsSync('styles.css')) {
-    fs.copyFileSync('styles.css', path.join('dist', 'styles.css'));
-  }
 
-  // Create a drop-in release folder: release/nexavault/{main.js, manifest.json, styles.css?}
+  // Create a drop-in release folder: release/nexavault/{main.js, manifest.json}
   const releaseDir = path.join('release', 'nexavault');
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.copyFileSync(path.join('dist', 'main.js'), path.join(releaseDir, 'main.js'));
   fs.copyFileSync('manifest.json', path.join(releaseDir, 'manifest.json'));
-  if (fs.existsSync('styles.css')) {
-    fs.copyFileSync('styles.css', path.join(releaseDir, 'styles.css'));
-  }
-  console.log('✅ release/nexavault/ ready — copy this folder into .obsidian/plugins/');
+
+  // ALSO emit main.js at repo root so `git clone` into a plugin folder
+  // works directly (manifest.json is already at the root).
+  fs.copyFileSync(path.join('dist', 'main.js'), path.join('.', 'main.js'));
+  console.log('✅ main.js written to: repo root, dist/, release/nexavault/');
   process.exit(0);
 } else {
   await context.watch();
