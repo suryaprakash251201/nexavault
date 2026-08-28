@@ -7,9 +7,9 @@ export default defineConfig({
     outDir: 'dist',
     lib: {
       entry: resolve(__dirname, 'src/main.ts'),
-      name: 'VaultSync',
-      formats: ['es'],
-      fileName: 'main',
+      name: 'Nexavault',
+      formats: ['cjs'],
+      fileName: () => 'main.js',
     },
     rollupOptions: {
       external: ['obsidian'],

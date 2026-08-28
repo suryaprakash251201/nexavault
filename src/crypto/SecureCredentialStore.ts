@@ -7,7 +7,8 @@ import { App, Plugin } from 'obsidian';
 import { Logger } from '../utils/logger';
 import { KeyDerivation } from './KeyDerivation';
 
-const CREDENTIALS_KEY = 'vaultsync_credentials';
+const CREDENTIALS_KEY = 'nexavault_credentials';
+const MASTER_KEY_KEY = 'nexavault_master_key';
 
 export class SecureCredentialStore {
   private app: App;
@@ -34,11 +35,91 @@ export class SecureCredentialStore {
       // Try to decrypt with provided password
       await this.unlock(masterPassword, encryptedCreds);
     } else if (encryptedCreds) {
-      // Store encrypted, will unlock later
-      this.logger.debug('Credentials stored encrypted, awaiting unlock');
+      // Use stored machine-local master key (auto-unlock)
+      await this.unlockWithStoredKey(data?.[MASTER_KEY_KEY]);
+    } else {
+      // No credentials yet - generate a machine-local master key
+      // so the store works out of the box. NOTE: this is obfuscation,
+      // not OS-level security (Obsidian exposes no keychain API).
+      await this.setupStoredMasterKey();
     }
     
     this.initialized = true;
+  }
+
+  private async setupStoredMasterKey(): Promise<void> {
+    const rawKey = crypto.getRandomValues(new Uint8Array(32));
+    const b64 = KeyDerivation.bytesToBase64(rawKey);
+    this.masterKey = await crypto.subtle.importKey(
+      'raw',
+      rawKey,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt', 'decrypt']
+    );
+    // Wipe raw key material from memory
+    rawKey.fill(0);
+    
+    const data = await this.plugin.loadData() || {};
+    data[MASTER_KEY_KEY] = b64;
+    await this.plugin.saveData(data);
+    this.credentials = new Map();
+    this.logger.info('Credential store initialized with machine-local key');
+  }
+
+  private async unlockWithStoredKey(masterKeyB64?: string): Promise<boolean> {
+    if (!masterKeyB64) return false;
+    try {
+      const rawKey = KeyDerivation.base64ToBytes(masterKeyB64);
+      this.masterKey = await crypto.subtle.importKey(
+        'raw',
+        rawKey,
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      rawKey.fill(0);
+      await this.loadCredentials();
+      return true;
+    } catch (error) {
+      this.logger.error('Failed to unlock credential store', error);
+      return false;
+    }
+  }
+
+  private async loadCredentials(): Promise<void> {
+    if (!this.masterKey) return;
+    const data = await this.plugin.loadData();
+    const encrypted = data?.[CREDENTIALS_KEY];
+    if (!encrypted) {
+      this.credentials = new Map();
+      return;
+    }
+    // Derive a salt-less key check: decrypt using stored key's SHA-256 as salt
+    const salt = new Uint8Array(await crypto.subtle.digest('SHA-256', await crypto.subtle.exportKey('raw', this.masterKey)));
+    const decrypted = await this.decryptData(encrypted, salt);
+    this.credentials = new Map(Object.entries(JSON.parse(new TextDecoder().decode(decrypted))));
+  }
+
+  private async encryptForStoredKey(data: Uint8Array): Promise<string> {
+    if (!this.masterKey) throw new Error('Credential store is locked');
+    const salt = new Uint8Array(await crypto.subtle.digest('SHA-256', await crypto.subtle.exportKey('raw', this.masterKey)));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encrypted = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, tagLength: 128 },
+      this.masterKey,
+      data
+    );
+    const encryptedBytes = new Uint8Array(encrypted);
+    const ciphertext = encryptedBytes.slice(0, -16);
+    const tag = encryptedBytes.slice(-16);
+    const combined = new Uint8Array(salt.length + iv.length + tag.length + ciphertext.length);
+    let offset = 0;
+    combined.set(salt, offset); offset += salt.length;
+    combined.set(iv, offset); offset += iv.length;
+    combined.set(tag, offset); offset += tag.length;
+    combined.set(ciphertext, offset);
+    return btoa(String.fromCharCode(...combined));
   }
 
   async unlock(password: string, encryptedData?: string): Promise<boolean> {
@@ -136,7 +217,7 @@ export class SecureCredentialStore {
     
     const credsObj = Object.fromEntries(this.credentials);
     const data = new TextEncoder().encode(JSON.stringify(credsObj));
-    const encrypted = await this.encryptData(data);
+    const encrypted = await this.encryptForStoredKey(data);
     
     const pluginData = await this.plugin.loadData() || {};
     pluginData[CREDENTIALS_KEY] = encrypted;
@@ -183,7 +264,7 @@ export class SecureCredentialStore {
     const tag = combined.slice(offset, offset + 16); offset += 16;
     const ciphertext = combined.slice(offset);
     
-    // Verify salt matches
+    // Verify salt matches (or derives from machine-local key)
     if (!KeyDerivation.constantTimeEqual(storedSalt, salt)) {
       throw new Error('Salt mismatch - wrong password?');
     }

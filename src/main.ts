@@ -304,8 +304,19 @@ export default class NexavaultPlugin extends Plugin {
 
   private async startServices() {
     try {
+      // Wire up dependencies (stores, hash manager)
+      this.manifestManager?.setStore(this);
+      this.changeQueue?.setPlugin(this);
+      this.changeDetector?.setHashManager(this.hashManager!);
+      
+      // Initialize credential store (auto-unlock with machine-local key)
+      await this.credentialStore?.initialize();
+      
       // Initialize manifest
       await this.manifestManager?.initialize();
+      
+      // Initialize change queue (restores persisted pending changes)
+      await this.changeQueue?.initialize();
       
       // Start change detector
       await this.changeDetector?.start();

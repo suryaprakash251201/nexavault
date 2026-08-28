@@ -41,7 +41,7 @@ export class ChangeQueue {
 
   setPlugin(plugin: Plugin): void {
     this.plugin = plugin;
-    this.store = new StateStore(app, plugin, 'queue', logger);
+    this.store = new StateStore(this.app, plugin, 'queue', this.logger);
   }
 
   async initialize(): Promise<void> {

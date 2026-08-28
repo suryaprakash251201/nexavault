@@ -1,13 +1,13 @@
 /**
  * KeyDerivation - Key derivation utilities
+ * Uses WebCrypto PBKDF2 (pure JS, works in Obsidian's renderer)
+ * No native dependencies.
  */
-
-import * as argon2 from 'argon2';
 
 export interface KDFParams {
   algorithm: 'argon2id' | 'pbkdf2';
   iterations: number;
-  memory: number; // KB for Argon2
+  memory: number; // KB (kept for config compatibility with Argon2)
   parallelism: number;
   hashLength: number;
   salt?: Uint8Array;
@@ -20,14 +20,6 @@ export interface DerivedKey {
 }
 
 export class KeyDerivation {
-  static readonly DEFAULT_ARGON2_PARAMS: KDFParams = {
-    algorithm: 'argon2id',
-    iterations: 3,
-    memory: 65536, // 64 MB
-    parallelism: 4,
-    hashLength: 32,
-  };
-
   static readonly DEFAULT_PBKDF2_PARAMS: KDFParams = {
     algorithm: 'pbkdf2',
     iterations: 100000,
@@ -37,35 +29,22 @@ export class KeyDerivation {
   };
 
   /**
-   * Derive a key from a password using Argon2id
+   * Derive a key from a password using PBKDF2-SHA256 (WebCrypto).
+   * Argon2id is emulated with a high-iteration PBKDF2 when selected,
+   * since native argon2 cannot run inside Obsidian.
    */
   static async deriveKeyArgon2id(
     password: string,
     params: Partial<KDFParams> = {}
   ): Promise<DerivedKey> {
-    const finalParams = { ...this.DEFAULT_ARGON2_PARAMS, ...params };
+    const finalParams = { ...this.DEFAULT_PBKDF2_PARAMS, ...params };
     
     const salt = finalParams.salt || crypto.getRandomValues(new Uint8Array(32));
-    
-    const hash = await argon2.hash(password, {
-      type: argon2.argon2id,
-      memoryCost: finalParams.memory,
-      timeCost: finalParams.iterations,
-      parallelism: finalParams.parallelism,
-      hashLength: finalParams.hashLength,
-      salt: Buffer.from(salt),
-      raw: true,
-    });
-    
-    return {
-      key: new Uint8Array(hash),
-      params: finalParams,
-      salt,
-    };
+    return this.deriveKeyPBKDF2(password, { ...finalParams, algorithm: 'pbkdf2' });
   }
 
   /**
-   * Derive a key from a password using PBKDF2
+   * Derive a key from a password using PBKDF2 (WebCrypto)
    */
   static async deriveKeyPBKDF2(
     password: string,
@@ -110,7 +89,12 @@ export class KeyDerivation {
   ): Promise<DerivedKey> {
     switch (params.algorithm) {
       case 'argon2id':
-        return this.deriveKeyArgon2id(password, params);
+        // Argon2 emulation via PBKDF2 (no native deps in Obsidian)
+        return this.deriveKeyPBKDF2(password, {
+          ...params,
+          algorithm: 'pbkdf2',
+          iterations: Math.max(100000, params.iterations * 50000),
+        });
       case 'pbkdf2':
         return this.deriveKeyPBKDF2(password, params);
       default:
@@ -124,16 +108,22 @@ export class KeyDerivation {
   static async verifyPassword(
     password: string,
     hash: string,
-    algorithm: 'argon2id' | 'pbkdf2' = 'argon2id'
+    algorithm: 'argon2id' | 'pbkdf2' = 'pbkdf2'
   ): Promise<boolean> {
     try {
-      if (algorithm === 'argon2id') {
-        return await argon2.verify(hash, password);
-      } else {
-        // For PBKDF2, we'd need to store parameters separately
-        // This is a simplified version
-        return false;
-      }
+      // Stored hash format: base64(salt):base64(derivedKey)
+      const [saltB64, keyB64] = hash.split(':');
+      if (!saltB64 || !keyB64) return false;
+      
+      const salt = KeyDerivation.base64ToBytes(saltB64);
+      const expected = KeyDerivation.base64ToBytes(keyB64);
+      
+      const derived = await this.deriveKeyPBKDF2(password, {
+        salt,
+        hashLength: expected.length,
+      });
+      
+      return this.constantTimeEqual(derived.key, expected);
     } catch {
       return false;
     }
@@ -164,5 +154,22 @@ export class KeyDerivation {
       result |= a[i] ^ b[i];
     }
     return result === 0;
+  }
+
+  static bytesToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  static base64ToBytes(base64: string): Uint8Array {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
   }
 }

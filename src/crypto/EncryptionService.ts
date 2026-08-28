@@ -1,9 +1,8 @@
 /**
  * EncryptionService - Client-side encryption for S3 backups
- * Uses AES-256-GCM with Argon2id key derivation
+ * Uses AES-256-GCM with PBKDF2-SHA256 key derivation (pure WebCrypto, works in Obsidian)
  */
 
-import * as argon2 from 'argon2';
 import { EncryptionSettings } from '../models/Settings';
 
 const KEY_LENGTH = 32; // 256 bits
@@ -39,7 +38,6 @@ export class EncryptionService {
     if (this.initialized && this.masterKey) return;
     
     if (!password) {
-      // Try to derive from stored verification hash
       throw new Error('Password required for encryption initialization');
     }
     
@@ -74,18 +72,8 @@ export class EncryptionService {
     // Generate random salt
     const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
     
-    // Derive key using Argon2id
-    const hash = await argon2.hash(password, {
-      type: argon2.argon2id,
-      memoryCost: this.settings.kdfMemory,
-      timeCost: this.settings.kdfIterations,
-      parallelism: this.settings.kdfParallelism,
-      hashLength: KEY_LENGTH,
-      salt: Buffer.from(salt),
-      raw: true,
-    });
-    
-    const derivedKey = new Uint8Array(hash);
+    // Derive key using PBKDF2-SHA256 (WebCrypto, no native deps)
+    const derivedKey = await this.deriveKeyFromPassword(password, salt);
     
     // Store salt and verification hash
     this.settings.salt = this.bytesToBase64(salt);
@@ -96,17 +84,29 @@ export class EncryptionService {
   }
 
   private async deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<Uint8Array> {
-    const hash = await argon2.hash(password, {
-      type: argon2.argon2id,
-      memoryCost: this.settings.kdfMemory,
-      timeCost: this.settings.kdfIterations,
-      parallelism: this.settings.kdfParallelism,
-      hashLength: KEY_LENGTH,
-      salt: Buffer.from(salt),
-      raw: true,
-    });
+    // Use high iteration count for security
+    const iterations = Math.max(100000, this.settings.kdfIterations * 50000);
     
-    return new Uint8Array(hash);
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(password),
+      'PBKDF2',
+      false,
+      ['deriveBits']
+    );
+    
+    const derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: new Uint8Array(salt),
+        iterations,
+        hash: 'SHA-256',
+      },
+      keyMaterial,
+      KEY_LENGTH * 8
+    );
+    
+    return new Uint8Array(derivedBits);
   }
 
   private async importKey(keyMaterial: Uint8Array): Promise<CryptoKey> {
@@ -133,7 +133,7 @@ export class EncryptionService {
     // Generate random IV
     const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
     
-    // Encrypt - use Uint8Array as ArrayBufferView
+    // Encrypt
     const encrypted = await crypto.subtle.encrypt(
       {
         name: 'AES-GCM',
@@ -141,7 +141,7 @@ export class EncryptionService {
         tagLength: TAG_LENGTH * 8,
       },
       this.masterKey,
-      data as ArrayBufferView
+      data
     );
     
     const encryptedBytes = new Uint8Array(encrypted);
@@ -154,7 +154,7 @@ export class EncryptionService {
     const encryptedData: EncryptedData = {
       version: 1,
       algorithm: 'AES-256-GCM',
-      kdf: 'argon2id',
+      kdf: 'pbkdf2',
       kdfParams: {
         iterations: this.settings.kdfIterations,
         memory: this.settings.kdfMemory,
@@ -224,7 +224,7 @@ export class EncryptionService {
         tagLength: TAG_LENGTH * 8,
       },
       this.masterKey,
-      encryptedWithTag as ArrayBufferView
+      encryptedWithTag
     );
     
     return new Uint8Array(decrypted);
