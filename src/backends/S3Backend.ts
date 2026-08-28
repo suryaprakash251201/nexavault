@@ -78,13 +78,13 @@ export class S3Backend extends BaseSyncBackend {
     super(config, logger);
     this.credentialStore = credentialStore;
     this.bucket = config.bucket;
-    this.prefix = config.prefix || 'vault/';
+    this.prefix = (config.prefix || 'vault/').replace(/\/?$/, '/'); // always trailing slash
   }
 
   override updateConfig(config: any): void {
     super.updateConfig(config);
     this.bucket = config.bucket || '';
-    this.prefix = config.prefix || 'vault/';
+    this.prefix = (config.prefix || 'vault/').replace(/\/?$/, '/');
     if (this.connected) {
       this.connected = false; // force reconnect with new config
     }
@@ -158,7 +158,16 @@ export class S3Backend extends BaseSyncBackend {
     // Initialize encryption if enabled
     if (this.config.encryption?.enabled) {
       this.encryptionService = new EncryptionService(this.config.encryption);
-      await this.encryptionService.initialize();
+      try {
+        await this.encryptionService.initialize();
+      } catch (error) {
+        throw new Error(
+          'Client-side encryption is enabled but no encryption password is set. ' +
+          'Open Settings > NexaVault > Encryption and click "Set Password" first, ' +
+          'or disable encryption.'
+        );
+      }
+      this.logger.info('Client-side encryption active for S3');
     }
 
     // Test connection
@@ -220,7 +229,7 @@ export class S3Backend extends BaseSyncBackend {
 
         for (const obj of response.Contents || []) {
           if (obj.Key && !obj.Key.endsWith('/')) {
-            const relativePath = normalizePath(obj.Key.replace(this.prefix, ''));
+            const relativePath = normalizePath(obj.Key.replace(this.prefix, '')).replace(/^\//, '');
             if (relativePath && !relativePath.startsWith('metadata/')) {
               const head = await this.client.send(new HeadObjectCommand({
                 Bucket: this.bucket,
@@ -386,7 +395,7 @@ export class S3Backend extends BaseSyncBackend {
 
       for (const obj of response.Contents || []) {
         if (obj.Key && !obj.Key.endsWith('/')) {
-          const relativePath = normalizePath(obj.Key.replace(this.prefix, ''));
+          const relativePath = normalizePath(obj.Key.replace(this.prefix, '')).replace(/^\//, '');
           files.push({
             path: relativePath,
             size: obj.Size || 0,

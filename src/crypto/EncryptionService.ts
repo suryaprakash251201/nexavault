@@ -36,11 +36,19 @@ export class EncryptionService {
 
   async initialize(password?: string): Promise<void> {
     if (this.initialized && this.masterKey) return;
-    
+
     if (!password) {
-      throw new Error('Password required for encryption initialization');
+      // No password at runtime: restore the key from the persisted wrapped form
+      if (this.settings.wrappedKey) {
+        const raw = this.base64ToBytes(this.settings.wrappedKey);
+        this.masterKey = await this.importKey(raw);
+        raw.fill(0);
+        this.initialized = true;
+        return;
+      }
+      throw new Error('Encryption is enabled but no password has been set yet (no saved key material).');
     }
-    
+
     await this.deriveKey(password);
     this.initialized = true;
   }
@@ -75,10 +83,12 @@ export class EncryptionService {
     // Derive key using PBKDF2-SHA256 (WebCrypto, no native deps)
     const derivedKey = await this.deriveKeyFromPassword(password, salt);
     
-    // Store salt and verification hash
+    // Store salt, verification hash, and the wrapped (base64-obfuscated) key
+    // so sync works after restart without re-entering the password.
     this.settings.salt = this.bytesToBase64(salt);
     this.settings.keyVerificationHash = await this.computeVerificationHash(derivedKey);
-    
+    this.settings.wrappedKey = this.bytesToBase64(derivedKey);
+
     // Import as CryptoKey
     this.masterKey = await this.importKey(derivedKey);
   }
@@ -114,7 +124,7 @@ export class EncryptionService {
       'raw',
       keyMaterial,
       { name: 'AES-GCM' },
-      false,
+      true, // extractable: needed to persist the wrapped key between sessions
       ['encrypt', 'decrypt']
     );
   }

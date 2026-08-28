@@ -5,6 +5,7 @@
 import { PluginSettingTab, Setting, Notice } from 'obsidian';
 import { Logger } from '../utils/logger';
 import { getProvider, getProviderConfigs } from '../providers';
+import { EncryptionService } from '../crypto/EncryptionService';
 import { SecureCredentialStore } from '../crypto/SecureCredentialStore';
 
 export class VaultSyncSettingTab extends PluginSettingTab {
@@ -609,12 +610,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           if (password) {
             const confirm = await this.promptPassword('Confirm encryption password');
             if (password === confirm) {
-              // Initialize encryption with new password
-              const encryptionService = this.plugin.getSyncEngine()?.s3Backend?.encryptionService;
-              if (encryptionService) {
-                await encryptionService.initialize(password);
-                new Notice('Encryption password set successfully');
-              }
+              // Initialize with the entered password and PERSIST the settings
+              // (salt, verification hash, wrapped key) so sync works after restart.
+              const service = new EncryptionService(this.plugin.settings.encryption);
+              await service.initialize(password);
+              this.plugin.settings.encryption = service.getSettings();
+              await this.plugin.saveSettings();
+              new Notice('Encryption password set successfully. Backups will be encrypted.');
             } else {
               new Notice('Passwords do not match');
             }

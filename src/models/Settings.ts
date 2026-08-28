@@ -74,6 +74,8 @@ export interface EncryptionSettings {
   // Password is never stored, only derived key verification hash
   keyVerificationHash?: string;
   salt?: string;
+  /** Base64 of the derived AES key (machine-local obfuscation, mirrors the credential store model) */
+  wrappedKey?: string;
 }
 
 export interface ExclusionSettings {

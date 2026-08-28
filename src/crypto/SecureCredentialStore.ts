@@ -54,7 +54,7 @@ export class SecureCredentialStore {
       'raw',
       rawKey,
       { name: 'AES-GCM' },
-      false,
+      true,
       ['encrypt', 'decrypt']
     );
     // Wipe raw key material from memory
@@ -75,7 +75,7 @@ export class SecureCredentialStore {
         'raw',
         rawKey,
         { name: 'AES-GCM' },
-        false,
+        true,
         ['encrypt', 'decrypt']
       );
       rawKey.fill(0);
@@ -136,7 +136,7 @@ export class SecureCredentialStore {
         'raw',
         keyMaterial.key,
         { name: 'AES-GCM' },
-        false,
+        true,
         ['encrypt', 'decrypt']
       );
       
