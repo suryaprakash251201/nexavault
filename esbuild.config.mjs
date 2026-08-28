@@ -11,7 +11,7 @@ const context = await esbuild.context({
   outfile: 'dist/main.js',
   format: 'cjs',
   platform: 'browser',
-  target: 'es2022',
+  target: 'es2020',
   sourcemap: prod ? true : 'inline',
   minify: prod,
   treeShaking: true,

@@ -2,7 +2,7 @@
  * GitHubBackend - GitHub synchronization backend
  */
 
-import { Octokit } from '@octokit/rest';
+import type { Octokit } from '@octokit/rest';
 import { BaseSyncBackend, RemoteFile } from './SyncBackend';
 import { Manifest } from '../models/Manifest';
 import { Change } from '../models/Change';
@@ -30,6 +30,13 @@ interface GitHubTreeItem {
   type: 'blob' | 'tree';
   sha: string;
   size?: number;
+}
+
+// Lazy loader for @octokit/rest - never executes top-level code during plugin load
+let octokitPromise: Promise<typeof import('@octokit/rest')> | null = null;
+function getOctokit(): Promise<typeof import('@octokit/rest')> {
+  octokitPromise ||= import('@octokit/rest');
+  return octokitPromise;
 }
 
 export class GitHubBackend extends BaseSyncBackend {
@@ -73,9 +80,10 @@ export class GitHubBackend extends BaseSyncBackend {
       throw new Error('GitHub authentication token not configured');
     }
     
+    const { Octokit } = await getOctokit();
     this.octokit = new Octokit({
       auth: token,
-      userAgent: 'VaultSync/1.0.0',
+      userAgent: 'Nexavault/1.0.0',
     });
     
     // Test connection

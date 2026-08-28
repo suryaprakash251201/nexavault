@@ -1,17 +1,20 @@
 /**
  * S3Backend - S3-compatible storage backend
+ *
+ * NOTE: The AWS SDK is imported LAZILY (only when S3 is actually used).
+ * This is critical for Obsidian: heavy third-party SDKs must not execute
+ * any top-level code during plugin load, or the plugin fails to enable.
  */
 
-import {
+import type {
   S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-  ListObjectsV2Command,
-  HeadObjectCommand,
-  CopyObjectCommand,
+  PutObjectCommandInput,
+  GetObjectCommandInput,
+  DeleteObjectCommandInput,
+  ListObjectsV2CommandInput,
+  HeadObjectCommandInput,
+  CopyObjectCommandInput,
 } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
 import { BaseSyncBackend, RemoteFile } from './SyncBackend';
 import { Manifest } from '../models/Manifest';
 import { Change } from '../models/Change';
@@ -20,10 +23,24 @@ import { Logger } from '../utils/logger';
 import { SecureCredentialStore } from '../crypto/SecureCredentialStore';
 import { EncryptionService } from '../crypto/EncryptionService';
 import { normalizePath, joinPath } from '../utils/pathUtils';
-import { S3Settings, S3ProviderType, EncryptionSettings } from '../models/Settings';
+import { S3Settings, S3ProviderType } from '../models/Settings';
 
 interface S3Config extends S3Settings {
   enabled: boolean;
+}
+
+// Lazy loader for the S3 AWS SDK - module body only evaluates on first use
+let sdkPromise: Promise<typeof import('@aws-sdk/client-s3')> | null = null;
+function getSdk(): Promise<typeof import('@aws-sdk/client-s3')> {
+  sdkPromise ||= import('@aws-sdk/client-s3');
+  return sdkPromise;
+}
+
+// Lazy loader for @aws-sdk/lib-storage (multipart uploads)
+let libStoragePromise: Promise<typeof import('@aws-sdk/lib-storage')> | null = null;
+function getLibStorage(): Promise<typeof import('@aws-sdk/lib-storage')> {
+  libStoragePromise ||= import('@aws-sdk/lib-storage');
+  return libStoragePromise;
 }
 
 export class S3Backend extends BaseSyncBackend {
@@ -57,35 +74,31 @@ export class S3Backend extends BaseSyncBackend {
 
   async connect(): Promise<void> {
     if (this.connected) return;
-    
+
     this.logger.info(`Connecting to ${this.getName()}...`);
-    
+
     // Get credentials from secure storage
     let accessKeyId = this.config.accessKeyId;
     let secretAccessKey = this.config.secretAccessKey;
     let sessionToken = this.config.sessionToken;
-    
-    if (!accessKeyId) {
-      accessKeyId = await this.credentialStore.get('s3_access_key');
-    }
-    if (!secretAccessKey) {
-      secretAccessKey = await this.credentialStore.get('s3_secret_key');
-    }
+
+    if (!accessKeyId) accessKeyId = await this.credentialStore.get('s3_access_key');
+    if (!secretAccessKey) secretAccessKey = await this.credentialStore.get('s3_secret_key');
     if (!sessionToken && this.config.provider === 'aws') {
       sessionToken = await this.credentialStore.get('s3_session_token');
     }
-    
+
     if (!accessKeyId || !secretAccessKey) {
       throw new Error('S3 credentials not configured');
     }
-    
+
+    // Lazily load the AWS SDK (never executes during plugin load)
+    const { S3Client, HeadObjectCommand } = await getSdk();
+
     // Determine endpoint
     let endpoint = this.config.endpoint;
-    if (!endpoint) {
-      endpoint = this.getDefaultEndpoint(this.config.provider);
-    }
-    
-    // Create S3 client
+    if (!endpoint) endpoint = this.getDefaultEndpoint(this.config.provider);
+
     this.client = new S3Client({
       region: this.config.region,
       endpoint,
@@ -96,13 +109,13 @@ export class S3Backend extends BaseSyncBackend {
       },
       forcePathStyle: this.config.provider === 'minio' || this.config.provider === 'custom',
     });
-    
+
     // Initialize encryption if enabled
     if (this.config.encryption?.enabled) {
       this.encryptionService = new EncryptionService(this.config.encryption);
       await this.encryptionService.initialize();
     }
-    
+
     // Test connection
     try {
       await this.client.send(new HeadObjectCommand({
@@ -111,12 +124,11 @@ export class S3Backend extends BaseSyncBackend {
       }));
     } catch (error: any) {
       if (error.name !== 'NotFound' && error.$metadata?.httpStatusCode !== 404) {
-        // Bucket might not exist or credentials wrong
         throw new Error(`S3 connection failed: ${error.message}`);
       }
       // 404 is fine - bucket exists but healthcheck object doesn't
     }
-    
+
     this.connected = true;
     this.logger.info(`${this.getName()} connected successfully`);
   }
@@ -130,7 +142,8 @@ export class S3Backend extends BaseSyncBackend {
 
   async testConnection(): Promise<boolean> {
     if (!this.client) return false;
-    
+
+    const { HeadObjectCommand } = await getSdk();
     try {
       await this.client.send(new HeadObjectCommand({
         Bucket: this.bucket,
@@ -144,45 +157,43 @@ export class S3Backend extends BaseSyncBackend {
 
   async getRemoteManifest(): Promise<Manifest> {
     if (!this.client) throw new Error('Not connected');
-    
+
     this.logger.debug('Fetching S3 manifest...');
-    
+
+    const { ListObjectsV2Command, HeadObjectCommand } = await getSdk();
+
     try {
       const files: Manifest['files'] = {};
       let continuationToken: string | undefined;
-      
+
       do {
         const response = await this.client.send(new ListObjectsV2Command({
           Bucket: this.bucket,
           Prefix: this.prefix,
           ContinuationToken: continuationToken,
         }));
-        
+
         for (const obj of response.Contents || []) {
           if (obj.Key && !obj.Key.endsWith('/')) {
             const relativePath = normalizePath(obj.Key.replace(this.prefix, ''));
             if (relativePath && !relativePath.startsWith('metadata/')) {
-              // Get metadata for hash
               const head = await this.client.send(new HeadObjectCommand({
                 Bucket: this.bucket,
                 Key: obj.Key,
               }));
-              
-              const hash = head.Metadata?.['x-vaultsync-hash'] || '';
-              const mtime = head.LastModified?.getTime() || Date.now();
-              
+
               files[relativePath] = {
-                hash,
+                hash: head.Metadata?.['x-vaultsync-hash'] || '',
                 size: obj.Size || 0,
-                mtime,
+                mtime: head.LastModified?.getTime() || Date.now(),
               };
             }
           }
         }
-        
+
         continuationToken = response.NextContinuationToken;
       } while (continuationToken);
-      
+
       return {
         version: 1,
         generatedAt: Date.now(),
@@ -202,22 +213,22 @@ export class S3Backend extends BaseSyncBackend {
 
   async uploadFile(path: string, data: Uint8Array): Promise<{ etag?: string; versionId?: string }> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    const { PutObjectCommand } = await getSdk();
     const key = this.getObjectKey(path);
     let uploadData = data;
-    
+
     // Encrypt if enabled
     if (this.encryptionService) {
       uploadData = await this.encryptionService.encrypt(data);
     }
-    
+
     // Use multipart upload for large files
     const multipartThreshold = (this.config.multipartThresholdMB || 100) * 1024 * 1024;
-    
     if (uploadData.length > multipartThreshold) {
       return this.uploadMultipart(key, uploadData);
     }
-    
+
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
@@ -228,15 +239,18 @@ export class S3Backend extends BaseSyncBackend {
         'x-vaultsync-encrypted': this.encryptionService ? 'true' : 'false',
       },
     });
-    
+
     const response = await this.client.send(command);
     return { etag: response.ETag, versionId: response.VersionId };
   }
 
   private async uploadMultipart(key: string, data: Uint8Array): Promise<{ etag?: string; versionId?: string }> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    // Lazily load lib-storage (multipart upload helper)
+    const { Upload } = await getLibStorage();
     const partSize = (this.config.multipartChunksizeMB || 50) * 1024 * 1024;
+
     const upload = new Upload({
       client: this.client,
       params: {
@@ -252,40 +266,40 @@ export class S3Backend extends BaseSyncBackend {
       queueSize: 4,
       partSize,
     });
-    
+
     const response = await upload.done();
     return { etag: response.ETag, versionId: response.VersionId };
   }
 
   async downloadFile(path: string): Promise<Uint8Array> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    const { GetObjectCommand } = await getSdk();
     const key = this.getObjectKey(path);
-    
+
     const response = await this.client.send(new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     }));
-    
+
     if (!response.Body) {
       throw new Error(`File not found: ${path}`);
     }
-    
+
     // Stream to buffer
     const chunks: Uint8Array[] = [];
     const stream = response.Body as any;
-    
     for await (const chunk of stream) {
       chunks.push(chunk);
     }
-    
+
     let data = Buffer.concat(chunks);
-    
+
     // Decrypt if enabled
     if (this.encryptionService && response.Metadata?.['x-vaultsync-encrypted'] === 'true') {
       data = await this.encryptionService.decrypt(data);
     }
-    
+
     // Verify hash
     const expectedHash = response.Metadata?.['x-vaultsync-hash'];
     if (expectedHash) {
@@ -294,15 +308,16 @@ export class S3Backend extends BaseSyncBackend {
         throw new Error(`Hash mismatch for ${path}`);
       }
     }
-    
+
     return data;
   }
 
   async deleteFile(path: string): Promise<void> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    const { DeleteObjectCommand } = await getSdk();
     const key = this.getObjectKey(path);
-    
+
     await this.client.send(new DeleteObjectCommand({
       Bucket: this.bucket,
       Key: key,
@@ -311,18 +326,19 @@ export class S3Backend extends BaseSyncBackend {
 
   async listFiles(prefix?: string): Promise<RemoteFile[]> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    const { ListObjectsV2Command } = await getSdk();
     const listPrefix = prefix ? this.getObjectKey(prefix) : this.prefix;
     const files: RemoteFile[] = [];
     let continuationToken: string | undefined;
-    
+
     do {
       const response = await this.client.send(new ListObjectsV2Command({
         Bucket: this.bucket,
         Prefix: listPrefix,
         ContinuationToken: continuationToken,
       }));
-      
+
       for (const obj of response.Contents || []) {
         if (obj.Key && !obj.Key.endsWith('/')) {
           const relativePath = normalizePath(obj.Key.replace(this.prefix, ''));
@@ -335,19 +351,19 @@ export class S3Backend extends BaseSyncBackend {
           });
         }
       }
-      
+
       continuationToken = response.NextContinuationToken;
     } while (continuationToken);
-    
+
     return files;
   }
 
   async pushChanges(changes: Change[]): Promise<void> {
     if (!this.client) throw new Error('Not connected');
     if (changes.length === 0) return;
-    
+
     this.logger.info(`Uploading ${changes.length} changes to S3...`);
-    
+
     // Process in batches for concurrency control
     const concurrency = 3;
     for (let i = 0; i < changes.length; i += concurrency) {
@@ -358,12 +374,11 @@ export class S3Backend extends BaseSyncBackend {
 
   private async processChange(change: Change): Promise<void> {
     const path = normalizePath(change.path);
-    
+
     switch (change.type) {
       case 'create':
       case 'modify': {
         // Read file from vault (would be provided by SyncEngine)
-        // For now, we'll need the SyncEngine to pass the data
         throw new Error('File data not provided - use uploadFile directly');
       }
       case 'delete': {
@@ -381,10 +396,11 @@ export class S3Backend extends BaseSyncBackend {
 
   private async renameFile(oldPath: string, newPath: string): Promise<void> {
     if (!this.client) throw new Error('Not connected');
-    
+
+    const { CopyObjectCommand } = await getSdk();
     const oldKey = this.getObjectKey(oldPath);
     const newKey = this.getObjectKey(newPath);
-    
+
     // Copy to new location
     await this.client.send(new CopyObjectCommand({
       Bucket: this.bucket,
@@ -392,13 +408,12 @@ export class S3Backend extends BaseSyncBackend {
       Key: newKey,
       MetadataDirective: 'COPY',
     }));
-    
+
     // Delete old
     await this.deleteFile(oldPath);
   }
 
   async pullChanges(): Promise<RemoteChange[]> {
-    // Would compare manifests and return needed changes
     return [];
   }
 
@@ -429,7 +444,7 @@ export class S3Backend extends BaseSyncBackend {
     return {
       supportsVersioning: true,
       supportsMultipart: true,
-      maxFileSize: 5 * 1024 * 1024 * 1024, // 5TB
+      maxFileSize: 5 * 1024 * 1024 * 1024,
       maxPartSize: 5 * 1024 * 1024 * 1024,
       supportsEncryption: true,
       supportsRename: true,
@@ -437,7 +452,6 @@ export class S3Backend extends BaseSyncBackend {
     };
   }
 
-  // Methods for SyncEngine to use with actual file data
   async uploadFileWithData(path: string, data: Uint8Array): Promise<{ etag?: string; versionId?: string }> {
     return this.uploadFile(path, data);
   }
