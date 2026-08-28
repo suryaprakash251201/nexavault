@@ -1,0 +1,11 @@
+{
+  "id": "nexavault",
+  "name": "Nexavault",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Vault synchronization and backup engine with GitHub live sync, S3-compatible cloud backup, incremental sync, conflict resolution, and client-side encryption.",
+  "author": "Nexavault Team",
+  "authorUrl": "https://github.com/nexavault",
+  "fundingUrl": "https://github.com/sponsors/nexavault",
+  "isDesktopOnly": false
+}
