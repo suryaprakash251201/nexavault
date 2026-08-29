@@ -307,10 +307,12 @@ export class SyncEngine {
     try {
       await this.s3Backend.connect();
       
-      // Step 1: upload changed files (incremental)
-      const localFiles = this.buildLocalFileMap();
-      const changes = this.computeBackupChanges(localFiles);
+      // Step 1: REAL incremental scan of the vault and upload changed files
+      const changes = await this.manifestManager.computeVaultChanges();
       const result = await this.pushChangesToBackend(this.s3Backend, changes);
+      if (changes.length > 0) {
+        this.logger.info(`Backup scan: ${changes.length} changed file(s) to upload`);
+      }
       
       // Step 2: create the snapshot manifest (only if sync step succeeded)
       let backup: BackupInfo | null = null;
@@ -801,34 +803,6 @@ export class SyncEngine {
       this.setStatus(SyncStatus.CONFLICT);
     }
 
-    return changes;
-  }
-
-  /**
-   * Compute changes needed for backup
-   */
-  private computeBackupChanges(localFiles: Map<string, FileState>): Change[] {
-    const changes: Change[] = [];
-    
-    for (const [path, state] of localFiles.entries()) {
-      const manifestEntry = this.manifestManager.getFileEntry(path);
-      
-      if (!manifestEntry || manifestEntry.hash !== state.hash) {
-        // File is new or modified
-        changes.push(Change.modify(path, state.hash, state.size, state.mtime, ['s3']));
-      }
-    }
-    
-    // Check for deleted files
-    const manifest = this.manifestManager.getManifest();
-    if (manifest) {
-      for (const path of Object.keys(manifest.files)) {
-        if (!localFiles.has(path)) {
-          changes.push(Change.delete(path, ['s3']));
-        }
-      }
-    }
-    
     return changes;
   }
 

@@ -2,7 +2,7 @@
  * SyncDashboardView - Main dashboard view
  */
 
-import { WorkspaceLeaf, ItemView, setIcon } from 'obsidian';
+import { WorkspaceLeaf, ItemView, setIcon, Notice } from 'obsidian';
 import { SyncStatus, SYNC_STATUS_LABELS, SYNC_STATUS_ICONS } from '../models/SyncStatus';
 import { Logger } from '../utils/logger';
 
@@ -115,7 +115,11 @@ export class SyncDashboardView extends ItemView {
     this.createActionButton(buttonsContainer, 'Sync Now', 'sync', () => this.plugin.getSyncEngine()?.syncNow());
     this.createActionButton(buttonsContainer, 'Pull Changes', 'download', () => this.plugin.getSyncEngine()?.pullChanges());
     this.createActionButton(buttonsContainer, 'Push Changes', 'upload', () => this.plugin.getSyncEngine()?.pushChanges());
-    this.createActionButton(buttonsContainer, 'Backup Now', 'database', () => this.plugin.getSyncEngine()?.backupNow());
+    this.createActionButton(buttonsContainer, 'Backup Now', 'database', () => {
+      this.plugin.getSyncEngine()?.backupNow()
+        .then(() => new Notice('Backup completed successfully.'))
+        .catch(err => new Notice(`Backup failed: ${err instanceof Error ? err.message : String(err)}`));
+    });
     this.createActionButton(buttonsContainer, 'View Conflicts', 'alert-triangle', () => this.plugin.openConflicts());
     this.createActionButton(buttonsContainer, 'Restore Backup', 'rotate-ccw', () => this.plugin.openRestore());
   }

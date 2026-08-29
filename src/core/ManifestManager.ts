@@ -7,6 +7,7 @@ import { HashManager } from './HashManager';
 import { ManifestStore } from '../storage/StateStore';
 import { Manifest, ManifestFileEntry, ManifestFileMap, ManifestDiff, RenameEntry, createEmptyManifest, calculateManifestMetadata, migrateManifest } from '../models/Manifest';
 import { Logger } from '../utils/logger';
+import { Change } from '../models/Change';
 import { matchAnyGlob, normalizePath } from '../utils/pathUtils';
 import { VaultSyncSettings } from '../models/Settings';
 
@@ -189,6 +190,60 @@ export class ManifestManager {
     
     await this.store.deleteFileEntry(normalizedOldPath);
     await this.store.setFileEntry(normalizedNewPath, entry);
+  }
+
+  /**
+   * REAL vault scan for backup: read actual vault files, re-hash only
+   * when stat (size/mtime) changed, and return create/modify/delete
+   * Changes targeting 's3'. Manifest entries are refreshed along the way
+   * so the backup snapshot is truthful.
+   */
+  async computeVaultChanges(): Promise<Change[]> {
+    const changes: Change[] = [];
+    const seen = new Set<string>();
+    const allFiles = this.vault.getAllLoadedFiles();
+
+    for (const file of allFiles) {
+      if (!(file instanceof TFile)) continue;
+      const path = normalizePath(file.path);
+      if (this.shouldExclude(path)) continue;
+      seen.add(path);
+
+      const entry = this.manifest?.files[path];
+      const statSame = !!(entry && file.stat.size === entry.size && Math.abs(file.stat.mtime - entry.mtime) < 2000);
+
+      let hash = entry?.hash || '';
+      if (!statSame) {
+        const data = await this.vault.readBinary(file);
+        hash = await this.hashManager.hashData(new Uint8Array(data));
+      }
+      if (!hash) continue;
+
+      const size = file.stat.size;
+      const mtime = file.stat.mtime;
+
+      if (!entry) {
+        changes.push(Change.create(path, hash, size, mtime, ['s3']));
+      } else if (entry.hash !== hash) {
+        changes.push(Change.modify(path, hash, size, mtime, ['s3']));
+      }
+
+      // Keep the manifest current so the snapshot reflects the real state
+      if (!entry || entry.hash !== hash || entry.size !== size || entry.mtime !== mtime) {
+        await this.updateFileEntry(path, hash, size, mtime);
+      }
+    }
+
+    // Deletions: manifest paths no longer present in the vault
+    if (this.manifest) {
+      for (const path of Object.keys(this.manifest.files)) {
+        if (!seen.has(path)) {
+          changes.push(Change.delete(path, ['s3']));
+        }
+      }
+    }
+
+    return changes;
   }
 
   /**

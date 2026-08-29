@@ -2,7 +2,7 @@
  * BackupView - Backup listing and management (real S3 data)
  */
 
-import { WorkspaceLeaf, ItemView, setIcon } from 'obsidian';
+import { WorkspaceLeaf, ItemView, setIcon, Notice } from 'obsidian';
 import { Logger } from '../utils/logger';
 
 export interface BackupInfo {
@@ -79,11 +79,14 @@ export class BackupView extends ItemView {
     backupNowBtn.onclick = () => {
       backupNowBtn.disabled = true;
       backupNowBtn.textContent = 'Backing up...';
-      this.plugin.getSyncEngine()?.backupNow().finally(() => {
-        backupNowBtn.disabled = false;
-        backupNowBtn.textContent = 'Backup Now';
-        this.loadBackups();
-      });
+      this.plugin.getSyncEngine()?.backupNow()
+        .then(() => new Notice('Backup completed successfully.'))
+        .catch(err => new Notice(`Backup failed: ${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => {
+          backupNowBtn.disabled = false;
+          backupNowBtn.textContent = 'Backup Now';
+          this.loadBackups();
+        });
     };
 
     // Backups list
