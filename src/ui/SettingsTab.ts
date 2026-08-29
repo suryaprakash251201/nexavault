@@ -358,6 +358,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         }));
     
     new Setting(containerEl)
+      .setName('R2 Account ID (Cloudflare only)')
+      .setDesc('Required for Cloudflare R2. The R2 endpoint URL needs the Account ID, not the bucket name. Leave empty for other providers.')
+      .addText(text => text
+        .setPlaceholder('abc123def456')
+        .setValue('')
+        .onChange(async (value) => {
+          if (value) await this.credentialStore.set('s3_accountId', value);
+        }));
+    this.credentialStore.get('s3_accountId').then(v => {
+      if (v && containerEl) { /* show saved hint */ }
+    }).catch(() => { /* store locked */ });
+
+    new Setting(containerEl)
       .setName('Path Prefix')
       .setDesc('Prefix/path within the bucket')
       .addText(text => text

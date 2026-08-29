@@ -135,9 +135,13 @@ export class S3Backend extends BaseSyncBackend {
     let endpoint = this.config.endpoint;
     if (!endpoint && this.config.provider === 'r2') {
       const accountId = await this.credentialStore.get('s3_accountId');
-      endpoint = accountId
-        ? `https://${accountId}.r2.cloudflarestorage.com`
-        : `https://${this.bucket}.r2.cloudflarestorage.com`;
+      if (!accountId) {
+        throw new Error(
+          'Cloudflare R2 needs the Account ID (not the bucket name). ' +
+          'Enter it in Settings > S3 Credentials as the "Account ID" field.'
+        );
+      }
+      endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
     }
     if (!endpoint) endpoint = this.getDefaultEndpoint(this.config.provider);
     if (!endpoint) {
@@ -164,17 +168,29 @@ export class S3Backend extends BaseSyncBackend {
       this.logger.info('Client-side encryption active for S3');
     }
 
-    // Test connection
+    // Probe: prefer ListObjects (validates credentials + bucket access);
+    // fall back to head-of-healthcheck and treat 404 as "bucket OK, no probe object".
     try {
-      await this.client.send(new HeadObjectCommand({
-        Bucket: this.bucket,
-        Key: this.prefix + '.healthcheck',
+      await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket, MaxKeys: 0,
       }));
-    } catch (error: any) {
-      if (error.name !== 'NotFound' && error.$metadata?.httpStatusCode !== 404) {
-        throw new Error(`S3 connection failed: ${error.message}`);
+    } catch (listError) {
+      // Healthcheck fallback for providers that list oddly or bucket not yet visible
+      try {
+        await this.client.send(new HeadObjectCommand({
+          Bucket: this.bucket, Key: this.prefix + '.healthcheck',
+        }));
+      } catch (error: any) {
+        const code = error?.$metadata?.httpStatusCode ?? error?.status;
+        if (code === 401 || code === 403) {
+          throw new Error('S3 authentication failed (401/403). Check the access key, secret, and bucket permissions.');
+        }
+        if (code === 404 && error.name === 'NotFound') {
+          // OK: bucket is reachable, no probe object yet
+        } else if (code !== 404) {
+          throw new Error(`S3 connection failed: ${error.message || error.name || 'unknown'}`);
+        }
       }
-      // 404 is fine - bucket exists but healthcheck object doesn't
     }
 
     this.connected = true;
@@ -191,16 +207,40 @@ export class S3Backend extends BaseSyncBackend {
   async testConnection(): Promise<boolean> {
     if (!this.client) return false;
 
-    const { HeadObjectCommand } = await getSdk();
+    const { HeadObjectCommand, ListObjectsV2Command } = await getSdk();
+    // 1. Verify the BUCKET is reachable AND the credentials are good.
+    try {
+      await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        MaxKeys: 0,
+      }));
+    } catch (error: any) {
+      const code = error?.$metadata?.httpStatusCode ?? error?.status;
+      if (code === 401 || code === 403) {
+        throw new Error('S3 authentication failed (401/403). Check the access key, secret, and bucket permissions.');
+      }
+      if (code === 404) {
+        throw new Error(`S3 bucket not found: "${this.bucket}". Create it or correct the bucket name.`);
+      }
+      if (error?.code === 'CredentialsError' || /credentials/i.test(error?.message || '')) {
+        throw new Error('S3 credentials are invalid or missing. Re-enter the access key and secret.');
+      }
+      throw new Error(`S3 test failed: ${error?.message || 'unknown error'}`);
+    }
+    // 2. Optional: probe a small head (404 is fine, signals bucket access works)
     try {
       await this.client.send(new HeadObjectCommand({
         Bucket: this.bucket,
         Key: this.prefix + '.healthcheck',
       }));
-      return true;
-    } catch {
-      return true; // 404 is still a successful connection
+    } catch (error: any) {
+      const code = error?.$metadata?.httpStatusCode ?? error?.status;
+      if (code !== 404 && code !== 403) {
+        // Unexpected - surface but don't fail
+        this.logger.warn(`S3 healthcheck probe returned ${code}`);
+      }
     }
+    return true;
   }
 
   async getRemoteManifest(): Promise<Manifest> {
@@ -474,8 +514,10 @@ export class S3Backend extends BaseSyncBackend {
   }
 
   private getDefaultEndpoint(provider: S3ProviderType): string {
+    const region = this.config.region || 'us-east-1';
     const endpoints: Record<S3ProviderType, string> = {
-      aws: 'https://s3.amazonaws.com',
+      // AWS: per-region virtual-hosted endpoint, or s3.<region>.amazonaws.com
+      aws: `https://s3.${region}.amazonaws.com`,
       r2: `https://${this.config.bucket}.r2.cloudflarestorage.com`,
       b2: 'https://s3.us-west-004.backblazeb2.com',
       minio: 'http://localhost:9000',
