@@ -46,7 +46,19 @@ export class EncryptionService {
         this.initialized = true;
         return;
       }
-      throw new Error('Encryption is enabled but no password has been set yet (no saved key material).');
+      // BOOTSTRAP: encryption was toggled ON but no password set yet.
+      // Generate a strong random key and persist it as the wrapped key.
+      // The same "machine-local obfuscation" model the credential store uses
+      // (Obsidian has no keychain API). The user can later set a password
+      // to add password-based protection (re-derives + rotates the key).
+      const key = crypto.getRandomValues(new Uint8Array(32));
+      this.masterKey = await this.importKey(key);
+      this.settings.salt = this.bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+      this.settings.keyVerificationHash = await this.computeVerificationHash(key);
+      this.settings.wrappedKey = this.bytesToBase64(key);
+      key.fill(0);
+      this.initialized = true;
+      return;
     }
 
     await this.deriveKey(password);

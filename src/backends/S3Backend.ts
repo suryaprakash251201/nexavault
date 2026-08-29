@@ -158,15 +158,9 @@ export class S3Backend extends BaseSyncBackend {
     // Initialize encryption if enabled
     if (this.config.encryption?.enabled) {
       this.encryptionService = new EncryptionService(this.config.encryption);
-      try {
-        await this.encryptionService.initialize();
-      } catch (error) {
-        throw new Error(
-          'Client-side encryption is enabled but no encryption password is set. ' +
-          'Open Settings > NexaVault > Encryption and click "Set Password" first, ' +
-          'or disable encryption.'
-        );
-      }
+      // EncryptionService auto-bootstraps a machine-local key if no
+      // password is set - no user action required, sync never blocks.
+      await this.encryptionService.initialize();
       this.logger.info('Client-side encryption active for S3');
     }
 

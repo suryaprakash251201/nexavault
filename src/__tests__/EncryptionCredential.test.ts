@@ -44,7 +44,7 @@ describe('EncryptionService', () => {
     expect(new TextDecoder().decode(decrypted)).toBe('secret vault note content');
   });
 
-  it('should throw a clear error when encryption is enabled but nothing is persisted', async () => {
+  it('should auto-bootstrap a machine-local key when no password is set (sync never blocks)', async () => {
     const settings: EncryptionSettings = {
       enabled: true,
       algorithm: 'aes-256-gcm',
@@ -54,7 +54,24 @@ describe('EncryptionService', () => {
       kdfParallelism: 1,
     };
     const svc = new EncryptionService({ ...settings });
-    await expect(svc.initialize()).rejects.toThrow(/password/i);
+    // No password, no persisted wrappedKey -> still initializes (bootstrap)
+    await expect(svc.initialize()).resolves.toBeUndefined();
+    expect(svc.isInitialized()).toBe(true);
+    const persisted = svc.getSettings();
+    expect(persisted.wrappedKey).toBeTruthy();
+    expect(persisted.salt).toBeTruthy();
+    expect(persisted.keyVerificationHash).toBeTruthy();
+
+    // After bootstrap, init() with no password restores from wrappedKey
+    const svc2 = new EncryptionService({ ...persisted });
+    await svc2.initialize();
+    expect(svc2.isInitialized()).toBe(true);
+
+    // The two services can decrypt each other's ciphertext
+    const plaintext = new TextEncoder().encode('hello bootstrap');
+    const encrypted = await svc.encrypt(plaintext);
+    const decrypted = await svc2.decrypt(encrypted);
+    expect(new TextDecoder().decode(decrypted)).toBe('hello bootstrap');
   });
 
   it('should verify the correct password', async () => {
