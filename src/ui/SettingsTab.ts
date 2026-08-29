@@ -223,7 +223,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         // Show a hint if a token is already stored
         this.credentialStore.get('github_token').then(v => {
           if (v) text.setPlaceholder('•••••••• (saved)');
-        });
+        }).catch(() => { /* store locked or missing key material */ });
         return text;
       });
     
